@@ -1,0 +1,27 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://vacation_user:vacation_password@db:5432/vacation_together
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: vacation_together
+      POSTGRES_USER: vacation_user
+      POSTGRES_PASSWORD: vacation_password
+    volumes:
+      - postgres_18_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vacation_user -d vacation_together"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_18_data:
