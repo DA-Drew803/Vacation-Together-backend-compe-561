@@ -1046,8 +1046,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
-=======
 name = "sqlmodel"
 version = "0.0.48"
 source = { registry = "https://pypi.org/simple" }
@@ -1062,7 +1060,6 @@ wheels = [
 ]
 
 [[package]]
->>>>>>> main
 name = "starlette"
 version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
