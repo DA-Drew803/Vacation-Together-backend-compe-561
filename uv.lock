@@ -1129,10 +1129,7 @@ dependencies = [
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
     { name = "sqlalchemy" },
-<<<<<<< HEAD
-=======
     { name = "sqlmodel" },
->>>>>>> main
     { name = "uvicorn" },
 ]
 
