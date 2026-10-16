@@ -79,7 +79,7 @@ Make sure Docker Desktop is running, then:
 docker compose up --build
 ```
 
-The API is exposed on `localhost:8000`. PostgreSQL runs inside the Docker network as `db:5432` and is not exposed on the host by default.
+The API is exposed on `localhost:8000`. PostgreSQL runs inside Docker as `db:5432` and is also available from the host at `localhost:5433` for local tests.
 
 Open:
 
@@ -97,6 +97,12 @@ docker compose down
 
 ```bash
 uv run pytest
+```
+
+Run tests against Docker PostgreSQL:
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://vacation_user:vacation_password@localhost:5433/vacation_together uv run pytest
 ```
 
 With coverage:

@@ -15,6 +15,8 @@ services:
       POSTGRES_DB: vacation_together
       POSTGRES_USER: vacation_user
       POSTGRES_PASSWORD: vacation_password
+    ports:
+      - "5433:5432"
     volumes:
       - postgres_18_data:/var/lib/postgresql
     healthcheck:

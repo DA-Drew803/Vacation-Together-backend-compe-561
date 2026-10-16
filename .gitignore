@@ -21,6 +21,7 @@ venv/
 .ruff_cache/
 .coverage
 htmlcov/
+*.db
 
 # ==============================================================================
 # 🐳 Docker & Local Configuration
