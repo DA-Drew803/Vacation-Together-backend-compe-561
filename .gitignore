@@ -5,8 +5,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
-env/
-venv/
+.env*
+!.env.example
+
 
 # ==============================================================================
 # ⚡ UV & Package Management 
@@ -26,9 +27,6 @@ htmlcov/
 # ==============================================================================
 # 🐳 Docker & Local Configuration
 # ==============================================================================
-# Protect your local credentials and database secrets
-.env
-.env.*
 
 # Ignore local image storage uploads if your backend saves files locally
 static_files/
