@@ -1,17 +1,13 @@
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, Query
-from sqlmodel import Field, Session, SQLModel, create_engine, select
-from typing import Annotated
-from app.database import Base, engine
-import app.models
-from app.database import create_db_and_tables, get_session
+from fastapi import FastAPI
+
+from app.core.database import create_db_and_tables
+from app.routers.itinerary import router as itinerary_router
 
 APP_VERSION = "0.1.0"
 
-
-SessionDep = Annotated[Session, Depends(get_session)]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,7 +21,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-
+app.include_router(itinerary_router, prefix="/api")
 
 
 @app.get("/")

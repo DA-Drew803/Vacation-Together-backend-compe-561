@@ -62,6 +62,7 @@ uv run pre-commit run --all-files
 ## Run Local Server
 
 ```bash
+cp .env.example .env
 uv run dev
 ```
 
@@ -79,7 +80,7 @@ Make sure Docker Desktop is running, then:
 docker compose up --build
 ```
 
-The API is exposed on `localhost:8000`. PostgreSQL runs inside the Docker network as `db:5432` and is not exposed on the host by default.
+The API is exposed on `localhost:8000`. PostgreSQL is available to local tools at `localhost:5432` and to the API container at `db:5432`.
 
 Open:
 
@@ -97,6 +98,12 @@ docker compose down
 
 ```bash
 uv run pytest
+```
+
+Run tests against Docker PostgreSQL:
+
+```bash
+TEST_DATABASE_URL=postgresql+psycopg://vacation_user:vacation_password@localhost:5432/vacation_together_test uv run pytest
 ```
 
 With coverage:
