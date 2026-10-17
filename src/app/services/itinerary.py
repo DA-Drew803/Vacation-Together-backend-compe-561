@@ -1,5 +1,6 @@
 from collections import defaultdict
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -33,12 +34,25 @@ def _money(value: float | Decimal) -> float:
     return float(value)
 
 
+def _uuid(value: str | UUID, field_name: str) -> UUID:
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(value)
+    except (AttributeError, TypeError, ValueError):
+        raise ItineraryInvalidError(f"{field_name} must be a valid UUID") from None
+
+
+def _decimal(value: float | Decimal) -> Decimal:
+    return Decimal(str(value))
+
+
 def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
     days: dict[int, list[dict]] = defaultdict(list)
     for item in itinerary.items:
         days[item.day_number].append(
             {
-                "id": item.id,
+                "id": str(item.id),
                 "position": item.position,
                 "title": item.title,
                 "estimated_cost": _money(item.estimated_cost),
@@ -46,9 +60,9 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
         )
 
     return {
-        "id": itinerary.id,
-        "trip_id": itinerary.trip_id,
-        "destination_id": itinerary.destination_id,
+        "id": str(itinerary.id),
+        "trip_id": str(itinerary.trip_id),
+        "destination_id": str(itinerary.destination_id),
         "version": itinerary.version,
         "status": itinerary.status,
         "days": [
@@ -64,7 +78,7 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
 
 def serialize_revision(revision: ItineraryRevision) -> dict:
     return {
-        "id": revision.id,
+        "id": str(revision.id),
         "instruction": revision.instruction,
         "status": revision.status,
         "base_version": revision.base_version,
@@ -73,7 +87,9 @@ def serialize_revision(revision: ItineraryRevision) -> dict:
 
 def get_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary | None:
     statement = (
-        select(Itinerary).where(Itinerary.trip_id == trip_id).options(selectinload(Itinerary.items))
+        select(Itinerary)
+        .where(Itinerary.trip_id == _uuid(trip_id, "trip_id"))
+        .options(selectinload(Itinerary.items))
     )
     if lock:
         statement = statement.with_for_update()
@@ -96,7 +112,7 @@ def _replace_items(
             day_number=item.day_number,
             position=item.position,
             title=item.title,
-            estimated_cost=item.estimated_cost,
+            estimated_cost=_decimal(item.estimated_cost),
         )
         for item in item_inputs
     ]
@@ -129,17 +145,17 @@ def generate_itinerary_for_selected_destination(
         raise ItineraryConflictError("Trip does not have a selected destination")
 
     itinerary = Itinerary(
-        trip_id=context.trip_id,
-        destination_id=context.selected_destination_id,
+        trip_id=_uuid(context.trip_id, "trip_id"),
+        destination_id=_uuid(context.selected_destination_id, "selected_destination_id"),
         version=1,
         status="DRAFT",
-        estimated_total_cost=draft.estimated_total_cost,
+        estimated_total_cost=_decimal(draft.estimated_total_cost),
         items=[
             ItineraryItem(
                 day_number=item.day_number,
                 position=item.position,
                 title=item.title,
-                estimated_cost=item.estimated_cost,
+                estimated_cost=_decimal(item.estimated_cost),
             )
             for item in draft.items
         ],
@@ -162,7 +178,7 @@ def generate_itinerary_for_selected_destination(
 
 def request_revision(
     db: Session,
-    trip_id: str,
+    context: TripContext,
     current_member_id: str,
     revision_input: RevisionInput,
 ) -> ItineraryRevision:
@@ -170,7 +186,13 @@ def request_revision(
     if not instruction:
         raise ItineraryInvalidError("Revision instruction must not be blank")
 
-    itinerary = require_itinerary(db, trip_id, lock=True)
+    eligible_ids = {
+        member.member_id for member in context.eligible_members if member.voting_eligible
+    }
+    if current_member_id not in eligible_ids:
+        raise ItineraryConflictError("Only eligible trip members may request revisions")
+
+    itinerary = require_itinerary(db, context.trip_id, lock=True)
     if itinerary.status == "FINALIZED":
         raise ItineraryConflictError("Finalized itinerary cannot be revised")
     if itinerary.status == "REVISING":
@@ -187,7 +209,7 @@ def request_revision(
 
     revision = ItineraryRevision(
         itinerary_id=itinerary.id,
-        requested_by_member_id=current_member_id,
+        requested_by_member_id=_uuid(current_member_id, "current_member_id"),
         instruction=instruction,
         status="RUNNING",
         base_version=itinerary.version,
@@ -209,7 +231,9 @@ def complete_revision(
     result: ItineraryDraft,
 ) -> ItineraryRevision:
     revision = db.scalar(
-        select(ItineraryRevision).where(ItineraryRevision.id == revision_id).with_for_update()
+        select(ItineraryRevision)
+        .where(ItineraryRevision.id == _uuid(revision_id, "revision_id"))
+        .with_for_update()
     )
     if revision is None:
         raise ItineraryConflictError("Revision does not exist")
@@ -241,7 +265,7 @@ def complete_revision(
         itinerary.status = "DRAFT"
     else:
         _replace_items(itinerary, result.items)
-        itinerary.estimated_total_cost = result.estimated_total_cost
+        itinerary.estimated_total_cost = _decimal(result.estimated_total_cost)
         itinerary.version += 1
         itinerary.status = "DRAFT"
         db.execute(delete(ItineraryApproval).where(ItineraryApproval.itinerary_id == itinerary.id))
@@ -254,7 +278,9 @@ def complete_revision(
 
 def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     revision = db.scalar(
-        select(ItineraryRevision).where(ItineraryRevision.id == revision_id).with_for_update()
+        select(ItineraryRevision)
+        .where(ItineraryRevision.id == _uuid(revision_id, "revision_id"))
+        .with_for_update()
     )
     if revision is None:
         raise ItineraryConflictError("Revision does not exist")
@@ -277,14 +303,17 @@ def approval_progress(
     itinerary: Itinerary,
     eligible_member_ids: set[str],
 ) -> ApprovalProgress:
+    eligible_member_uuids = {
+        _uuid(member_id, "eligible member_id") for member_id in eligible_member_ids
+    }
     approved_count = 0
-    if eligible_member_ids:
+    if eligible_member_uuids:
         approved_count = (
             db.query(ItineraryApproval)
             .filter(
                 ItineraryApproval.itinerary_id == itinerary.id,
                 ItineraryApproval.version == itinerary.version,
-                ItineraryApproval.trip_member_id.in_(eligible_member_ids),
+                ItineraryApproval.trip_member_id.in_(eligible_member_uuids),
                 ItineraryApproval.approved.is_(True),
             )
             .count()
@@ -327,13 +356,13 @@ def approve_current_version(
     approval = db.scalar(
         select(ItineraryApproval).where(
             ItineraryApproval.itinerary_id == itinerary.id,
-            ItineraryApproval.trip_member_id == current_member_id,
+            ItineraryApproval.trip_member_id == _uuid(current_member_id, "current_member_id"),
         )
     )
     if approval is None:
         approval = ItineraryApproval(
             itinerary_id=itinerary.id,
-            trip_member_id=current_member_id,
+            trip_member_id=_uuid(current_member_id, "current_member_id"),
             version=approval_input.version,
             approved=approval_input.approved,
         )
@@ -349,7 +378,7 @@ def approve_current_version(
 
     db.commit()
     return {
-        "member_id": approval.trip_member_id,
+        "member_id": str(approval.trip_member_id),
         "version": approval.version,
         "approved": approval.approved,
     }

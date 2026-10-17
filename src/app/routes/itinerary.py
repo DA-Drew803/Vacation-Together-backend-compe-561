@@ -9,6 +9,7 @@ from app.schemas.itinerary import (
     Approval,
     ApprovalInput,
     ApprovalProgress,
+    Error,
     Itinerary,
     Revision,
     RevisionInput,
@@ -17,7 +18,18 @@ from app.schemas.itinerary import (
 from app.services import itinerary as itinerary_service
 from app.services.itinerary import ItineraryConflictError, ItineraryInvalidError
 
-router = APIRouter(prefix="/trips/{trip_id}", tags=["itinerary"])
+PHASE_5_ERROR_RESPONSES = {
+    status.HTTP_400_BAD_REQUEST: {"model": Error, "description": "Invalid request"},
+    status.HTTP_401_UNAUTHORIZED: {"model": Error, "description": "Unauthenticated"},
+    status.HTTP_403_FORBIDDEN: {"model": Error, "description": "Not a trip member / forbidden"},
+    status.HTTP_409_CONFLICT: {"model": Error, "description": "State conflict"},
+}
+
+router = APIRouter(
+    prefix="/trips/{trip_id}",
+    tags=["itinerary"],
+    responses=PHASE_5_ERROR_RESPONSES,
+)
 
 
 def conflict_response(error: ItineraryConflictError) -> HTTPException:
@@ -45,6 +57,8 @@ def read_itinerary(
         return itinerary_service.serialize_itinerary(itinerary, context.budget.currency)
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
+    except ItineraryInvalidError as error:
+        raise invalid_response(error) from error
 
 
 @router.post(
@@ -62,7 +76,7 @@ def create_revision(
     try:
         revision = itinerary_service.request_revision(
             db,
-            trip_id,
+            context.model_copy(update={"trip_id": trip_id}),
             current_member_id,
             revision_input,
         )
@@ -86,6 +100,8 @@ def read_approval_progress(
         )
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
+    except ItineraryInvalidError as error:
+        raise invalid_response(error) from error
 
 
 @router.put("/itinerary/approval/me", response_model=Approval)
@@ -105,3 +121,5 @@ def approve_itinerary(
         )
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
+    except ItineraryInvalidError as error:
+        raise invalid_response(error) from error

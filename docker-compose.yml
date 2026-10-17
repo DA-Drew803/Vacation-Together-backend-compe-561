@@ -11,6 +11,8 @@ services:
 
   db:
     image: postgres:18
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: vacation_together
       POSTGRES_USER: vacation_user

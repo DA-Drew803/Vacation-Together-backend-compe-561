@@ -1,4 +1,5 @@
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -8,12 +9,21 @@ class Budget(BaseModel):
     currency: str = "USD"
 
 
+ItineraryStatus = Literal["GENERATING", "DRAFT", "REVISING", "FINALIZED", "FAILED"]
+RevisionStatus = Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "NO_CHANGE"]
+
+
+class Error(BaseModel):
+    code: str
+    message: str
+
+
 class Itinerary(BaseModel):
     id: str
     trip_id: str
     destination_id: str
     version: int = Field(ge=1)
-    status: str
+    status: ItineraryStatus
     days: list[dict[str, Any]]
     estimated_total_cost: Budget
 
@@ -23,9 +33,9 @@ class RevisionInput(BaseModel):
 
 
 class Revision(BaseModel):
-    id: str
+    id: UUID
     instruction: str
-    status: str
+    status: RevisionStatus
     base_version: int
 
 

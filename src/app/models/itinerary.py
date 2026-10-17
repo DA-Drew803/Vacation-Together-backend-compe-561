@@ -1,4 +1,5 @@
-from uuid import uuid4
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -17,8 +19,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
-def new_id() -> str:
-    return str(uuid4())
+def new_id() -> UUID:
+    return uuid4()
 
 
 class Itinerary(Base):
@@ -31,12 +33,13 @@ class Itinerary(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    trip_id: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
-    destination_id: Mapped[str] = mapped_column(String, nullable=False)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
+    # External constraints wait for the teammate-owned table names to stabilize.
+    trip_id: Mapped[UUID] = mapped_column(Uuid, unique=True, index=True, nullable=False)
+    destination_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String, default="DRAFT", nullable=False)
-    estimated_total_cost: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    estimated_total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
     items: Mapped[list["ItineraryItem"]] = relationship(
         back_populates="itinerary",
@@ -56,12 +59,16 @@ class Itinerary(Base):
 class ItineraryItem(Base):
     __tablename__ = "itinerary_items"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    itinerary_id: Mapped[str] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
+    itinerary_id: Mapped[UUID] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
     position: Mapped[int] = mapped_column(Integer, nullable=False)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    estimated_cost: Mapped[float] = mapped_column(Numeric(12, 2), default=0, nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    estimated_cost: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=Decimal("0.00"),
+        nullable=False,
+    )
 
     itinerary: Mapped[Itinerary] = relationship(back_populates="items")
 
@@ -82,9 +89,10 @@ class ItineraryRevision(Base):
         ),
     )
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=new_id)
-    itinerary_id: Mapped[str] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
-    requested_by_member_id: Mapped[str] = mapped_column(String, nullable=False)
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
+    itinerary_id: Mapped[UUID] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
+    # External constraint waits for the teammate-owned table name to stabilize.
+    requested_by_member_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String, default="PENDING", nullable=False)
     base_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -103,11 +111,12 @@ class ItineraryApproval(Base):
         CheckConstraint("version >= 1", name="ck_itinerary_approval_version_positive"),
     )
 
-    itinerary_id: Mapped[str] = mapped_column(
+    itinerary_id: Mapped[UUID] = mapped_column(
         ForeignKey("itineraries.id"),
         primary_key=True,
     )
-    trip_member_id: Mapped[str] = mapped_column(String, primary_key=True)
+    # External constraint waits for the teammate-owned table name to stabilize.
+    trip_member_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
