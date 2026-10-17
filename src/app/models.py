@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -17,12 +18,19 @@ class Invitation(SQLModel, table=True):
 
 class MemberAvailability(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
+    trip_member_id: int = Field(foreign_key="TripMember.id")
+    start_date: list[date] = Field(sa_column_kwargs={"type_": "DATE"})
+    end_date: list[date] = Field(sa_column_kwargs={"type_": "DATE"})
 
 class MemberBudget(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
+    trip_member_id: int = Field(foreign_key="TripMember.id")
+    max_amount: int
 
 class MemberPreference(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
+    trip_member_id: int = Field(foreign_key="TripMember.id")
+    interests: list[str] = Field(sa_column_kwargs={"type_": "JSON"})
 
 class Destination(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
