@@ -3,8 +3,8 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
-from app.database import create_db_and_tables
-from app.routes.itinerary import router as itinerary_router
+from app.core.database import create_db_and_tables
+from app.routers.itinerary import router as itinerary_router
 
 APP_VERSION = "0.1.0"
 
