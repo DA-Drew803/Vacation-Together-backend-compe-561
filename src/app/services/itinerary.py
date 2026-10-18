@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from decimal import Decimal
 from typing import TYPE_CHECKING
@@ -25,7 +26,10 @@ from app.schemas.itinerary import (
 )
 
 if TYPE_CHECKING:
-    from app.services.openai_itinerary import ItineraryDraftProvider
+    from app.services.openai_itinerary import ItineraryDraftProvider, ItineraryRevisionProvider
+
+
+logger = logging.getLogger(__name__)
 
 
 class ItineraryConflictError(ValueError):
@@ -242,11 +246,12 @@ def request_revision(
     itinerary.status = "REVISING"
     db.add(revision)
     try:
+        db.flush()
+        db.expunge(revision)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise ItineraryConflictError("A revision is already running") from None
-    db.refresh(revision)
     return revision
 
 
@@ -321,6 +326,69 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     db.commit()
     db.refresh(revision)
     return revision
+
+
+def execute_ai_revision(
+    db: Session,
+    context: TripContext,
+    current_member_id: str,
+    revision_input: RevisionInput,
+    provider: ItineraryRevisionProvider,
+) -> ItineraryRevision:
+    """Run an isolated AI revision without holding a database transaction during the API call.
+
+    This orchestration boundary is intentionally not connected to the HTTP 202 route. A production
+    endpoint needs a team decision about background execution and recovery after process failure.
+    Authorization, active-revision exclusion, versioning, and approval handling remain delegated
+    to the existing deterministic lifecycle functions.
+    """
+    revision = request_revision(db, context, current_member_id, revision_input)
+    revision_id = str(revision.id)
+    try:
+        itinerary = require_itinerary(db, context.trip_id)
+        current_draft = ItineraryDraft(
+            items=[
+                ItineraryItemInput(
+                    day_number=item.day_number,
+                    position=item.position,
+                    title=item.title,
+                    estimated_cost=_money(item.estimated_cost),
+                )
+                for item in itinerary.items
+            ],
+            estimated_total_cost=_money(itinerary.estimated_total_cost),
+        )
+        base_version = revision.base_version
+
+        # End the read transaction before the external provider call.
+        db.commit()
+        revised_draft = provider.revise(
+            context,
+            current_draft,
+            base_version,
+            revision_input.instruction,
+        )
+        return complete_revision(db, revision_id, revised_draft)
+    except Exception:
+        _cleanup_failed_revision(db, revision_id)
+        raise
+
+
+def _cleanup_failed_revision(db: Session, revision_id: str) -> None:
+    """Best-effort cleanup that never masks the exception which triggered it."""
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Failed to roll back before cleaning up revision %s", revision_id)
+        return
+    try:
+        fail_revision(db, revision_id)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to roll back after cleanup failure for revision %s", revision_id)
+        logger.exception("Failed to clean up itinerary revision %s", revision_id)
 
 
 def approval_progress(
