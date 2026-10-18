@@ -1,4 +1,5 @@
 from typing import Annotated, NoReturn
+from uuid import UUID
 
 from fastapi import HTTPException, Path, status
 
@@ -12,12 +13,12 @@ def _integration_unavailable(name: str) -> NoReturn:
     )
 
 
-async def get_current_member_id() -> str:
+async def get_current_member_id() -> UUID:
     """Integration boundary for the authenticated trip member."""
     _integration_unavailable("Authentication")
 
 
-async def get_trip_context(trip_id: Annotated[str, Path()]) -> TripContext:
+async def get_trip_context(trip_id: Annotated[UUID, Path()]) -> TripContext:
     """Integration boundary for trip, destination, voting, and membership data."""
     del trip_id
     _integration_unavailable("Trip context")

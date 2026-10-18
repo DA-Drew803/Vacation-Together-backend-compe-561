@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
@@ -48,7 +49,7 @@ def invalid_response(error: ItineraryInvalidError) -> HTTPException:
 
 @router.get("/itinerary", response_model=Itinerary)
 def read_itinerary(
-    trip_id: Annotated[str, Path()],
+    trip_id: Annotated[UUID, Path()],
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
 ) -> dict:
@@ -67,11 +68,11 @@ def read_itinerary(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def create_revision(
-    trip_id: Annotated[str, Path()],
+    trip_id: Annotated[UUID, Path()],
     revision_input: RevisionInput,
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
-    current_member_id: Annotated[str, Depends(get_current_member_id)],
+    current_member_id: Annotated[UUID, Depends(get_current_member_id)],
 ) -> dict:
     try:
         revision = itinerary_service.request_revision(
@@ -89,7 +90,7 @@ def create_revision(
 
 @router.get("/itinerary/approval", response_model=ApprovalProgress)
 def read_approval_progress(
-    trip_id: Annotated[str, Path()],
+    trip_id: Annotated[UUID, Path()],
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
 ) -> ApprovalProgress:
@@ -106,11 +107,11 @@ def read_approval_progress(
 
 @router.put("/itinerary/approval/me", response_model=Approval)
 def approve_itinerary(
-    trip_id: Annotated[str, Path()],
+    trip_id: Annotated[UUID, Path()],
     approval_input: ApprovalInput,
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
-    current_member_id: Annotated[str, Depends(get_current_member_id)],
+    current_member_id: Annotated[UUID, Depends(get_current_member_id)],
 ) -> dict:
     try:
         return itinerary_service.approve_current_version(

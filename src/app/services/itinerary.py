@@ -60,9 +60,9 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
         )
 
     return {
-        "id": str(itinerary.id),
-        "trip_id": str(itinerary.trip_id),
-        "destination_id": str(itinerary.destination_id),
+        "id": itinerary.id,
+        "trip_id": itinerary.trip_id,
+        "destination_id": itinerary.destination_id,
         "version": itinerary.version,
         "status": itinerary.status,
         "days": [
@@ -78,14 +78,14 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
 
 def serialize_revision(revision: ItineraryRevision) -> dict:
     return {
-        "id": str(revision.id),
+        "id": revision.id,
         "instruction": revision.instruction,
         "status": revision.status,
         "base_version": revision.base_version,
     }
 
 
-def get_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary | None:
+def get_itinerary(db: Session, trip_id: UUID, *, lock: bool = False) -> Itinerary | None:
     statement = (
         select(Itinerary)
         .where(Itinerary.trip_id == _uuid(trip_id, "trip_id"))
@@ -96,7 +96,7 @@ def get_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary
     return db.scalar(statement)
 
 
-def require_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary:
+def require_itinerary(db: Session, trip_id: UUID, *, lock: bool = False) -> Itinerary:
     itinerary = get_itinerary(db, trip_id, lock=lock)
     if itinerary is None:
         raise ItineraryConflictError("Itinerary has not been generated")
@@ -179,7 +179,7 @@ def generate_itinerary_for_selected_destination(
 def request_revision(
     db: Session,
     context: TripContext,
-    current_member_id: str,
+    current_member_id: UUID,
     revision_input: RevisionInput,
 ) -> ItineraryRevision:
     instruction = revision_input.instruction.strip()
@@ -227,7 +227,7 @@ def request_revision(
 
 def complete_revision(
     db: Session,
-    revision_id: str,
+    revision_id: UUID,
     result: ItineraryDraft,
 ) -> ItineraryRevision:
     revision = db.scalar(
@@ -276,7 +276,7 @@ def complete_revision(
     return revision
 
 
-def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
+def fail_revision(db: Session, revision_id: UUID) -> ItineraryRevision:
     revision = db.scalar(
         select(ItineraryRevision)
         .where(ItineraryRevision.id == _uuid(revision_id, "revision_id"))
@@ -301,7 +301,7 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
 def approval_progress(
     db: Session,
     itinerary: Itinerary,
-    eligible_member_ids: set[str],
+    eligible_member_ids: set[UUID],
 ) -> ApprovalProgress:
     eligible_member_uuids = {
         _uuid(member_id, "eligible member_id") for member_id in eligible_member_ids
@@ -337,7 +337,7 @@ def get_approval_progress(db: Session, context: TripContext) -> ApprovalProgress
 def approve_current_version(
     db: Session,
     context: TripContext,
-    current_member_id: str,
+    current_member_id: UUID,
     approval_input: ApprovalInput,
 ) -> dict:
     itinerary = require_itinerary(db, context.trip_id, lock=True)
@@ -378,7 +378,7 @@ def approve_current_version(
 
     db.commit()
     return {
-        "member_id": str(approval.trip_member_id),
+        "member_id": approval.trip_member_id,
         "version": approval.version,
         "approved": approval.approved,
     }

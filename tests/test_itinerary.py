@@ -126,7 +126,7 @@ def harness() -> Generator[Harness, None, None]:
         with testing_session() as db:
             yield db
 
-    async def override_trip_context(trip_id: Annotated[str, Path()]) -> TripContext:
+    async def override_trip_context(trip_id: Annotated[UUID, Path()]) -> TripContext:
         return trip_context(trip_id)
 
     async def override_current_member(
@@ -134,8 +134,8 @@ def harness() -> Generator[Harness, None, None]:
             str | None,
             Header(alias="X-Test-Member-Id"),
         ] = None,
-    ) -> str:
-        return test_member_id or MEMBER_1
+    ) -> UUID:
+        return UUID(test_member_id or MEMBER_1)
 
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_trip_context] = override_trip_context
@@ -199,6 +199,9 @@ def test_uml_owned_column_types_and_openapi_contract() -> None:
     openapi = app.openapi()
     schemas = openapi["components"]["schemas"]
     assert schemas["Itinerary"]["properties"]["id"]["type"] == "string"
+    assert schemas["Itinerary"]["properties"]["id"]["format"] == "uuid"
+    assert schemas["Itinerary"]["properties"]["trip_id"]["format"] == "uuid"
+    assert schemas["Itinerary"]["properties"]["destination_id"]["format"] == "uuid"
     assert schemas["Budget"]["properties"]["max_amount"]["type"] == "number"
     assert schemas["Itinerary"]["properties"]["status"]["enum"] == [
         "GENERATING",
@@ -223,6 +226,9 @@ def test_uml_owned_column_types_and_openapi_contract() -> None:
         ("/api/trips/{trip_id}/itinerary/approval/me", "put"),
     )
     for path, method in operations:
+        trip_id_parameter = openapi["paths"][path][method]["parameters"][0]
+        assert trip_id_parameter["name"] == "trip_id"
+        assert trip_id_parameter["schema"]["format"] == "uuid"
         responses = openapi["paths"][path][method]["responses"]
         for status_code in ("400", "401", "403", "409"):
             schema = responses[status_code]["content"]["application/json"]["schema"]
@@ -240,6 +246,12 @@ def test_get_missing_itinerary_has_no_generation_side_effect(harness: Harness) -
     with harness.session_factory() as db:
         assert db.scalar(select(func.count()).select_from(Itinerary)) == before
         assert db.scalar(select(func.count()).select_from(ItineraryItem)) == 0
+
+
+def test_route_rejects_non_uuid_trip_id(harness: Harness) -> None:
+    response = harness.client.get("/api/trips/not-a-uuid/itinerary")
+
+    assert response.status_code == 422
 
 
 def test_initial_generation_persists_items_and_prevents_duplicate(harness: Harness) -> None:
@@ -526,7 +538,7 @@ def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None
     revision_trip_id = uuid_for("trip-concurrent-revision")
     seed_itinerary(harness, revision_trip_id)
 
-    def start_revision(member_id: str) -> str:
+    def start_revision(member_id: UUID) -> str:
         with harness.session_factory() as db:
             try:
                 itinerary_service.request_revision(
@@ -540,13 +552,13 @@ def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None
             return "started"
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        outcomes = list(executor.map(start_revision, (MEMBER_1, MEMBER_2)))
+        outcomes = list(executor.map(start_revision, (UUID(MEMBER_1), UUID(MEMBER_2))))
     assert sorted(outcomes) == ["conflict", "started"]
 
     approval_trip_id = uuid_for("trip-concurrent-approval")
     seed_itinerary(harness, approval_trip_id)
 
-    def approve_member(member_id: str) -> None:
+    def approve_member(member_id: UUID) -> None:
         with harness.session_factory() as db:
             itinerary_service.approve_current_version(
                 db,
@@ -556,7 +568,12 @@ def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None
             )
 
     with ThreadPoolExecutor(max_workers=3) as executor:
-        list(executor.map(approve_member, (MEMBER_1, MEMBER_2, MEMBER_3)))
+        list(
+            executor.map(
+                approve_member,
+                (UUID(MEMBER_1), UUID(MEMBER_2), UUID(MEMBER_3)),
+            )
+        )
 
     with harness.session_factory() as db:
         itinerary = itinerary_service.require_itinerary(db, approval_trip_id)

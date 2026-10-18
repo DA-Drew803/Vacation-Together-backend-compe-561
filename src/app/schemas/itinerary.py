@@ -19,9 +19,9 @@ class Error(BaseModel):
 
 
 class Itinerary(BaseModel):
-    id: str
-    trip_id: str
-    destination_id: str
+    id: UUID
+    trip_id: UUID
+    destination_id: UUID
     version: int = Field(ge=1)
     status: ItineraryStatus
     days: list[dict[str, Any]]
@@ -45,7 +45,7 @@ class ApprovalInput(BaseModel):
 
 
 class Approval(BaseModel):
-    member_id: str
+    member_id: UUID
     version: int
     approved: bool
 
@@ -58,14 +58,14 @@ class ApprovalProgress(BaseModel):
 
 
 class EligibleMember(BaseModel):
-    member_id: str
+    member_id: UUID
     display_name: str
     voting_eligible: bool = True
 
 
 class TripContext(BaseModel):
-    trip_id: str
-    selected_destination_id: str
+    trip_id: UUID
+    selected_destination_id: UUID
     destination_name: str
     start_date: str
     end_date: str
