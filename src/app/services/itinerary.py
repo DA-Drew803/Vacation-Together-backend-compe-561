@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from collections import defaultdict
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -20,6 +23,9 @@ from app.schemas.itinerary import (
     RevisionInput,
     TripContext,
 )
+
+if TYPE_CHECKING:
+    from app.services.openai_itinerary import ItineraryDraftProvider
 
 
 class ItineraryConflictError(ValueError):
@@ -174,6 +180,25 @@ def generate_itinerary_for_selected_destination(
 
     db.commit()
     return require_itinerary(db, context.trip_id)
+
+
+def generate_and_persist_initial_itinerary(
+    db: Session,
+    context: TripContext,
+    provider: ItineraryDraftProvider,
+) -> Itinerary:
+    """Prototype integration boundary; not safe for concurrent production use.
+
+    This pre-check can avoid a provider call after an itinerary already exists, but concurrent
+    callers can still invoke the provider more than once. It also performs a database read before
+    the external call. Do not connect this wrapper to voting until the team defines atomic claims,
+    transaction boundaries, failure recording, and retries with the voting workflow owner.
+    """
+    existing = get_itinerary(db, context.trip_id)
+    if existing is not None:
+        return existing
+    draft = provider.generate(context)
+    return generate_itinerary_for_selected_destination(db, context, draft)
 
 
 def request_revision(
