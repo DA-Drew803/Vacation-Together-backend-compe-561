@@ -1,10 +1,16 @@
 from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlmodel import Session, select
 
 from app.core.database import get_session
 from app.core.dependencies import get_current_user
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
-from app.models.member import MemberAvailability, MemberBudget, MemberPreference
+from app.models.member import (
+    MemberAvailability,
+    MemberBudget,
+    MemberPreference,
+)
 from app.models.trip import Trip, TripMember
 from app.models.user import User
 from app.schemas.member import (
@@ -25,8 +31,8 @@ CurrentUserDep = Annotated[User, Depends(get_current_user)]
 
 def get_current_trip_member(
     session: Session,
-    trip_id: int,
-    current_user_id: int,
+    trip_id: UUID,
+    current_user_id: UUID,
 ) -> TripMember:
     member = session.exec(
         select(TripMember).where(
@@ -45,7 +51,7 @@ def get_current_trip_member(
 
 @router.get("/members", response_model=list[MemberRead])
 def get_members(
-    trip_id: int,
+    trip_id: UUID,
     session: SessionDep,
     current_user: CurrentUserDep,
 ) -> list[MemberRead]:
@@ -75,8 +81,8 @@ def get_members(
 
 @router.delete("/members/{member_id}")
 def remove_member(
-    trip_id: int,
-    member_id: int,
+    trip_id: UUID,
+    member_id: UUID,
     session: SessionDep,
     current_user: CurrentUserDep,
 ) -> dict[str, str]:
@@ -120,7 +126,7 @@ def remove_member(
 
 @router.get("/availability/me", response_model=AvailabilityRead)
 def get_my_availability(
-    trip_id: int,
+    trip_id: UUID,
     session: SessionDep,
     current_user: CurrentUserDep,
 ) -> AvailabilityRead:
@@ -135,7 +141,7 @@ def get_my_availability(
 
 @router.put("/availability/me", response_model=AvailabilityRead)
 def update_my_availability(
-    trip_id: int,
+    trip_id: UUID,
     data: AvailabilityUpdate,
     session: SessionDep,
     current_user: CurrentUserDep,
@@ -167,7 +173,7 @@ def update_my_availability(
 
 @router.get("/budget/me", response_model=BudgetRead)
 def get_my_budget(
-    trip_id: int,
+    trip_id: UUID,
     session: SessionDep,
     current_user: CurrentUserDep,
 ) -> BudgetRead:
@@ -187,7 +193,7 @@ def get_my_budget(
 
 @router.put("/budget/me", response_model=BudgetRead)
 def update_my_budget(
-    trip_id: int,
+    trip_id: UUID,
     data: BudgetUpdate,
     session: SessionDep,
     current_user: CurrentUserDep,
@@ -216,7 +222,7 @@ def update_my_budget(
 
 @router.get("/preferences/me", response_model=PreferenceRead)
 def get_my_preferences(
-    trip_id: int,
+    trip_id: UUID,
     session: SessionDep,
     current_user: CurrentUserDep,
 ) -> PreferenceRead:
@@ -236,7 +242,7 @@ def get_my_preferences(
 
 @router.put("/preferences/me", response_model=PreferenceRead)
 def update_my_preferences(
-    trip_id: int,
+    trip_id: UUID,
     data: PreferenceUpdate,
     session: SessionDep,
     current_user: CurrentUserDep,

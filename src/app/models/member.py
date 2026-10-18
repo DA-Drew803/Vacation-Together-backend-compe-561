@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
+
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Date,
+    ForeignKey,
+    Numeric,
+    String,
+    Text,
+    Uuid,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.trip import TripMember
+
+
+class MemberAvailability(Base):
+    __tablename__ = "member_availability"
+    __table_args__ = (
+        CheckConstraint(
+            "start_date <= end_date",
+            name="ck_member_availability_date_order",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    trip_member_id: Mapped[UUID] = mapped_column(
+        ForeignKey("trip_members.id"),
+        nullable=False,
+        index=True,
+    )
+    start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    end_date: Mapped[date] = mapped_column(Date, nullable=False)
+
+    trip_member: Mapped[TripMember] = relationship(back_populates="availabilities")
+
+
+class MemberBudget(Base):
+    __tablename__ = "member_budgets"
+    __table_args__ = (
+        CheckConstraint("max_amount > 0", name="ck_member_budget_positive"),
+    )
+
+    trip_member_id: Mapped[UUID] = mapped_column(
+        ForeignKey("trip_members.id"),
+        primary_key=True,
+    )
+    max_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
+
+    trip_member: Mapped[TripMember] = relationship(back_populates="budget")
+
+
+class MemberPreference(Base):
+    __tablename__ = "member_preferences"
+
+    trip_member_id: Mapped[UUID] = mapped_column(
+        ForeignKey("trip_members.id"),
+        primary_key=True,
+    )
+    interests: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    private_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    trip_member: Mapped[TripMember] = relationship(back_populates="preference")
