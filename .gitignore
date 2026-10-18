@@ -22,6 +22,7 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+*.db
 
 # ==============================================================================
 # 🐳 Docker & Local Configuration
