@@ -63,6 +63,9 @@ def context() -> TripContext:
 def valid_output() -> dict[str, Any]:
     return {
         "cost_basis": "PER_PERSON",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": [
             {
@@ -143,7 +146,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
     assert call["model"] == "test-model"
     assert call["timeout"] == 12
     assert call["store"] is False
-    assert call["text_format"].__name__ == "_GeneratedItineraryDraft"
+    assert call["text_format"].__name__ == "GeneratedItineraryDraft"
     request_context = json.loads(call["input"][1]["content"])
     assert request_context["selected_destination"] == "San Diego"
     assert request_context["travel_dates"] == {

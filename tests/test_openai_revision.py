@@ -25,6 +25,7 @@ from app.schemas.itinerary import (
     TripContext,
 )
 from app.services import itinerary as itinerary_service
+from app.services import openai_itinerary as provider_module
 from app.services.openai_itinerary import (
     ItineraryProviderError,
     ItineraryProviderInputError,
@@ -124,6 +125,9 @@ def revision_output(
         "outcome": outcome,
         "outcome_reason": "The requested change was applied safely.",
         "cost_basis": "PER_PERSON",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": [
             {
@@ -198,10 +202,25 @@ def cost_only_output_for(
         "outcome": outcome,
         "outcome_reason": "The requested cost change was evaluated safely.",
         "cost_basis": "PER_PERSON",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": items,
         "estimated_total_cost_cents": total_cents,
     }
+
+
+def cost_only_output_preserving_metadata(
+    draft: ItineraryDraft,
+    *,
+    target_day: int = 2,
+) -> dict[str, Any]:
+    output = cost_only_output_for(draft, target_day=target_day)
+    for output_item, draft_item in zip(output["items"], draft.items, strict=True):
+        if draft_item.metadata is not None:
+            output_item.update(draft_item.metadata.model_dump(mode="json"))
+    return output
 
 
 def arbitrarily_ordered_plain_draft() -> ItineraryDraft:
@@ -277,7 +296,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
     )
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity categories"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(
             trip_context(),
             draft,
@@ -349,7 +368,7 @@ def test_generated_title_with_repeated_spaces_supports_cost_only_revision() -> N
     generated = generation_provider.generate(trip_context())
     assert generated.items[-1].title == "Museum  admission"
 
-    revision_provider, _ = provider_with(cost_only_output_for(generated))
+    revision_provider, _ = provider_with(cost_only_output_preserving_metadata(generated))
     revised = revision_provider.revise(
         trip_context(),
         generated,
@@ -362,13 +381,140 @@ def test_generated_title_with_repeated_spaces_supports_cost_only_revision() -> N
     assert revised.estimated_total_cost == 230
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("category", "activities"),
+        ("tags", ["invented"]),
+        ("environment", "OUTDOOR"),
+        ("mobility", "HIGH"),
+        ("intensity", "HIGH"),
+    ],
+)
+def test_metadata_free_cost_only_revision_rejects_injected_semantics(
+    field: str,
+    value: Any,
+) -> None:
+    draft = current_draft()
+    output = cost_only_output_for(draft)
+    output["items"][0][field] = value
+    provider, _ = provider_with(output)
+
+    with pytest.raises(ItineraryProviderResponseError, match="semantic metadata exactly"):
+        provider.revise(trip_context(), draft, 1, "Make Day 2 cheaper")
+
+    assert all(item.metadata is None for item in draft.items)
+    assert draft.estimated_total_cost == 240
+
+
+def test_metadata_free_cost_revision_does_not_grant_trusted_provenance() -> None:
+    draft = current_draft()
+    cost_provider, _ = provider_with(cost_only_output_for(draft))
+
+    revised = cost_provider.revise(trip_context(), draft, 1, "Make Day 2 cheaper")
+
+    assert all(item.metadata is None for item in revised.items)
+    assert not provider_module.is_issued_trusted_draft(revised)
+    replacement_provider, replacement_client = provider_with(revision_output())
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+        replacement_provider.revise(
+            trip_context(),
+            revised,
+            2,
+            "Replace the museum with a park",
+        )
+    assert replacement_client.responses.calls == []
+
+
+def test_trusted_draft_retains_provenance_after_metadata_preserving_cost_revision() -> None:
+    generation_output = generation_output_with_repeated_title_whitespace()
+    for item in generation_output["items"]:
+        item["tags"] = [item["category"]]
+        item["environment"] = "INDOOR"
+        item["mobility"] = "LOW"
+        item["intensity"] = "LOW"
+    generation_provider, _ = provider_with(generation_output)
+    generated = generation_provider.generate(trip_context())
+    cost_output = cost_only_output_preserving_metadata(generated)
+    cost_provider, _ = provider_with(cost_output)
+
+    cost_revised = cost_provider.revise(trip_context(), generated, 1, "Make Day 2 cheaper")
+
+    assert provider_module.is_issued_trusted_draft(cost_revised)
+    semantic_output = cost_only_output_preserving_metadata(
+        cost_revised,
+        target_day=4,
+    )
+    semantic_output["operation"] = "SEMANTIC"
+    semantic_output["items"][-1]["title"] = "Central park visit"
+    semantic_output["replacement_target"] = {
+        "day_number": 3,
+        "position": 1,
+        "title": "Museum  admission",
+        "requested_activity": "park",
+    }
+    semantic_provider, semantic_client = provider_with(semantic_output)
+
+    replaced = semantic_provider.revise(
+        trip_context(),
+        cost_revised,
+        2,
+        "Replace the museum with a park",
+    )
+
+    assert replaced.items[-1].title == "Central park visit"
+    assert len(semantic_client.responses.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("category", "food"),
+        ("tags", ["changed"]),
+        ("environment", "OUTDOOR"),
+        ("mobility", "HIGH"),
+        ("intensity", "HIGH"),
+    ],
+)
+def test_trusted_cost_only_revision_rejects_any_metadata_change(
+    field: str,
+    value: Any,
+) -> None:
+    generation_provider, _ = provider_with(generation_output_with_repeated_title_whitespace())
+    generated = generation_provider.generate(trip_context())
+    output = cost_only_output_preserving_metadata(generated)
+    output["items"][0][field] = value
+    provider, _ = provider_with(output)
+
+    with pytest.raises(ItineraryProviderResponseError, match="semantic metadata exactly"):
+        provider.revise(trip_context(), generated, 1, "Make Day 2 cheaper")
+
+    assert provider_module.is_issued_trusted_draft(generated)
+
+
+def test_no_change_cost_only_response_cannot_inject_metadata() -> None:
+    draft = current_draft()
+    output = cost_only_output_for(draft, reduction_cents=0, outcome="NO_CHANGE")
+    output["items"][0]["category"] = "flights"
+    provider, _ = provider_with(output)
+
+    with pytest.raises(ItineraryProviderResponseError, match="semantic metadata exactly"):
+        provider.revise(trip_context(), draft, 1, "Make Day 2 cheaper")
+
+    assert all(item.metadata is None for item in draft.items)
+    assert draft.estimated_total_cost == 240
+
+
 @pytest.mark.parametrize("outcome", ["NO_CHANGE", "UNSUPPORTED"])
 def test_no_change_outcomes_preserve_generated_repeated_title_whitespace(
     outcome: str,
 ) -> None:
     generation_provider, _ = provider_with(generation_output_with_repeated_title_whitespace())
     generated = generation_provider.generate(trip_context())
-    output = cost_only_output_for(generated, reduction_cents=0, outcome=outcome)
+    output = cost_only_output_preserving_metadata(generated)
+    output["outcome"] = outcome
+    output["estimated_total_cost_cents"] = 24_000
+    output["items"][2]["estimated_cost_cents"] = 3_000
     revision_provider, _ = provider_with(output)
 
     if outcome == "UNSUPPORTED":
@@ -404,7 +550,7 @@ def test_generation_rejects_noncanonical_title_boundaries(
 def test_walking_reduction_is_rejected_without_measurable_fields() -> None:
     provider, client = provider_with(revision_output(target="walking"))
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="cannot be verified"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, "Reduce walking on Day 3")
 
     assert client.responses.calls == []
@@ -576,7 +722,7 @@ def test_activity_replacement_rejects_ambiguous_requested_replacement() -> None:
 def test_activity_replacements_are_rejected_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity categories"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
     assert client.responses.calls == []
@@ -594,7 +740,7 @@ def test_activity_replacements_are_rejected_before_provider_call(instruction: st
 def test_interest_revisions_are_disabled_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity tags"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
     assert client.responses.calls == []
@@ -855,7 +1001,9 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         seed_itinerary(db, context)
         approve_first_member(db, context)
 
-        with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity tags"):
+        with pytest.raises(
+            ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"
+        ):
             itinerary_service.execute_ai_revision(
                 db,
                 context,
@@ -886,7 +1034,7 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
 
         with pytest.raises(
             ItineraryRevisionUnsupportedError,
-            match="structured activity categories",
+            match="provider-generated trusted draft",
         ):
             itinerary_service.execute_ai_revision(
                 db,
