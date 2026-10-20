@@ -1,5 +1,9 @@
+from __future__ import annotations
+
+import logging
 from collections import defaultdict
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -20,6 +24,12 @@ from app.schemas.itinerary import (
     RevisionInput,
     TripContext,
 )
+
+if TYPE_CHECKING:
+    from app.services.openai_itinerary import ItineraryDraftProvider, ItineraryRevisionProvider
+
+
+logger = logging.getLogger(__name__)
 
 
 class ItineraryConflictError(ValueError):
@@ -176,6 +186,25 @@ def generate_itinerary_for_selected_destination(
     return require_itinerary(db, context.trip_id)
 
 
+def generate_and_persist_initial_itinerary(
+    db: Session,
+    context: TripContext,
+    provider: ItineraryDraftProvider,
+) -> Itinerary:
+    """Prototype integration boundary; not safe for concurrent production use.
+
+    This pre-check can avoid a provider call after an itinerary already exists, but concurrent
+    callers can still invoke the provider more than once. It also performs a database read before
+    the external call. Do not connect this wrapper to voting until the team defines atomic claims,
+    transaction boundaries, failure recording, and retries with the voting workflow owner.
+    """
+    existing = get_itinerary(db, context.trip_id)
+    if existing is not None:
+        return existing
+    draft = provider.generate(context)
+    return generate_itinerary_for_selected_destination(db, context, draft)
+
+
 def request_revision(
     db: Session,
     context: TripContext,
@@ -217,11 +246,12 @@ def request_revision(
     itinerary.status = "REVISING"
     db.add(revision)
     try:
+        db.flush()
+        db.expunge(revision)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise ItineraryConflictError("A revision is already running") from None
-    db.refresh(revision)
     return revision
 
 
@@ -296,6 +326,69 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     db.commit()
     db.refresh(revision)
     return revision
+
+
+def execute_ai_revision(
+    db: Session,
+    context: TripContext,
+    current_member_id: str,
+    revision_input: RevisionInput,
+    provider: ItineraryRevisionProvider,
+) -> ItineraryRevision:
+    """Run an isolated AI revision without holding a database transaction during the API call.
+
+    This orchestration boundary is intentionally not connected to the HTTP 202 route. A production
+    endpoint needs a team decision about background execution and recovery after process failure.
+    Authorization, active-revision exclusion, versioning, and approval handling remain delegated
+    to the existing deterministic lifecycle functions.
+    """
+    revision = request_revision(db, context, current_member_id, revision_input)
+    revision_id = str(revision.id)
+    try:
+        itinerary = require_itinerary(db, context.trip_id)
+        current_draft = ItineraryDraft(
+            items=[
+                ItineraryItemInput(
+                    day_number=item.day_number,
+                    position=item.position,
+                    title=item.title,
+                    estimated_cost=_money(item.estimated_cost),
+                )
+                for item in itinerary.items
+            ],
+            estimated_total_cost=_money(itinerary.estimated_total_cost),
+        )
+        base_version = revision.base_version
+
+        # End the read transaction before the external provider call.
+        db.commit()
+        revised_draft = provider.revise(
+            context,
+            current_draft,
+            base_version,
+            revision_input.instruction,
+        )
+        return complete_revision(db, revision_id, revised_draft)
+    except Exception:
+        _cleanup_failed_revision(db, revision_id)
+        raise
+
+
+def _cleanup_failed_revision(db: Session, revision_id: str) -> None:
+    """Best-effort cleanup that never masks the exception which triggered it."""
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Failed to roll back before cleaning up revision %s", revision_id)
+        return
+    try:
+        fail_revision(db, revision_id)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception("Failed to roll back after cleanup failure for revision %s", revision_id)
+        logger.exception("Failed to clean up itinerary revision %s", revision_id)
 
 
 def approval_progress(
