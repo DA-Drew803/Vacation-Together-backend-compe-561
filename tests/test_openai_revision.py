@@ -123,7 +123,7 @@ def revision_output(
     output = {
         "outcome": outcome,
         "outcome_reason": "The requested change was applied safely.",
-        "cost_basis": "GROUP_PLANNING_CEILING",
+        "cost_basis": "PER_PERSON",
         "destination_name": "San Diego",
         "start_date": "2027-06-10",
         "end_date": "2027-06-12",
@@ -200,7 +200,7 @@ def cost_only_output_for(
     return {
         "outcome": outcome,
         "outcome_reason": "The requested cost change was evaluated safely.",
-        "cost_basis": "GROUP_PLANNING_CEILING",
+        "cost_basis": "PER_PERSON",
         "destination_name": "San Diego",
         "start_date": "2027-06-10",
         "end_date": "2027-06-12",
@@ -621,7 +621,7 @@ def test_revision_rejects_inconsistent_output_total() -> None:
         ("missing_day", "every travel day"),
         ("position_gap", "sequential positions"),
         ("inconsistent_total", "equal the sum"),
-        ("over_budget", "exceeds the authoritative planning budget ceiling"),
+        ("over_budget", "exceeds the limiting per-person budget"),
         ("blank_title", "nonblank and trimmed"),
         ("untrimmed_title", "nonblank and trimmed"),
         ("overlong_title", "invalid or unsupported data"),

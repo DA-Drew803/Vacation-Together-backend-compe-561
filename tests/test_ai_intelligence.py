@@ -1,5 +1,4 @@
 import json
-import runpy
 from types import SimpleNamespace
 from typing import Any
 
@@ -72,7 +71,7 @@ def rich_output() -> dict[str, Any]:
         (3, 2, "Local transit", "local_transport", 2_000, ["transit"]),
     ]
     return {
-        "cost_basis": "GROUP_PLANNING_CEILING",
+        "cost_basis": "PER_PERSON",
         "destination_name": "San Francisco",
         "start_date": "2027-06-10",
         "end_date": "2027-06-12",
@@ -132,6 +131,35 @@ def test_generation_without_weather_explicitly_says_weather_is_unavailable() -> 
     assert "Do not assume" in payload["weather_note"]
 
 
+def test_group_match_limit_is_used_as_the_per_person_budget_for_three_members() -> None:
+    output = rich_output()
+    output["items"][0]["estimated_cost_cents"] -= 13_000
+    output["estimated_total_cost_cents"] -= 13_000
+    context = rich_context().model_copy(
+        update={
+            "budget": Budget(max_amount=800, currency="USD"),
+            "eligible_members": [
+                EligibleMember(member_id="member-a", display_name="Member A"),
+                EligibleMember(member_id="member-b", display_name="Member B"),
+                EligibleMember(member_id="member-c", display_name="Member C"),
+            ],
+        }
+    )
+    provider, client = provider_with(output)
+
+    draft = provider.generate(context)
+
+    payload = json.loads(client.responses.calls[0]["input"][1]["content"])
+    assert payload["limiting_per_person_budget"] == {
+        "amount_cents": 80_000,
+        "currency": "USD",
+    }
+    assert payload["group_size"] == 3
+    assert draft.estimated_total_cost == 790
+    assert output["cost_basis"] == "PER_PERSON"
+    assert "share for one traveler" in client.responses.calls[0]["input"][0]["content"]
+
+
 def test_semantic_revision_uses_trusted_metadata_and_can_change_content() -> None:
     generated = rich_output()
     revised = rich_output()
@@ -164,13 +192,19 @@ def test_whole_trip_cost_revision_preserves_content_and_reduces_total() -> None:
     revised["outcome"] = "APPLIED"
     revised["outcome_reason"] = "Reduced food spending."
     revised["operation"] = "COST_ONLY"
-    provider, _ = provider_with(generated, revised)
+    provider, client = provider_with(generated, revised)
 
     current = provider.generate(rich_context())
     result = provider.revise(rich_context(), current, 1, "Make the whole trip cheaper")
 
     assert result.estimated_total_cost == 91_000 / 100
     assert [item.title for item in result.items] == [item.title for item in current.items]
+    revision_payload = json.loads(client.responses.calls[1]["input"][1]["content"])
+    assert revision_payload["limiting_per_person_budget"] == {
+        "amount_cents": 140_000,
+        "currency": "USD",
+    }
+    assert revision_payload["current_itinerary"]["cost_basis"] == "PER_PERSON"
 
 
 def test_semantic_revision_is_rejected_after_metadata_free_round_trip() -> None:
@@ -355,11 +389,13 @@ def test_generation_rejects_destination_change_deterministically() -> None:
         provider.generate(rich_context())
 
 
-def test_generation_rejects_one_cent_over_the_authoritative_ceiling() -> None:
+def test_generation_rejects_one_cent_over_limiting_per_person_budget() -> None:
     provider, client = provider_with(rich_output())
-    context = rich_context().model_copy(update={"budget": Budget(max_amount=919, currency="USD")})
+    context = rich_context().model_copy(
+        update={"budget": Budget(max_amount=919.99, currency="USD")}
+    )
 
-    with pytest.raises(ItineraryProviderResponseError, match="budget ceiling"):
+    with pytest.raises(ItineraryProviderResponseError, match="per-person budget"):
         provider.generate(context)
 
     assert client.responses.calls
@@ -403,7 +439,7 @@ def test_revision_rejects_semantic_result_over_the_same_ceiling() -> None:
     provider, _ = provider_with(generated, revised)
     current = provider.generate(rich_context())
 
-    with pytest.raises(ItineraryProviderResponseError, match="budget ceiling"):
+    with pytest.raises(ItineraryProviderResponseError, match="per-person budget"):
         provider.revise(rich_context(), current, 1, "Give us more nature")
 
 
@@ -489,40 +525,41 @@ def test_sequential_successful_revisions_use_the_latest_draft() -> None:
     assert current.items[4].title == "Presidio nature walk"
 
 
-def test_demo_revision_controller_preserves_state_for_blank_and_failed_requests() -> None:
-    demo = runpy.run_path("scripts/demo_ai_itinerary.py")
-    apply_revision = demo["apply_revision"]
-    current = ItineraryDraft(
-        items=[ItineraryItemInput(day_number=1, position=1, title="Museum", estimated_cost=10)],
-        estimated_total_cost=10,
-    )
+def test_revision_provider_handles_blank_invalid_failed_and_successful_requests() -> None:
+    invalid_response = rich_output()
+    invalid_response["outcome"] = "APPLIED"
+    invalid_response["operation"] = "COST_ONLY"
+    invalid_response["outcome_reason"] = "Invalid content change."
+    invalid_response["items"][3]["title"] = "Unexpected replacement"
 
-    class FakeProvider:
-        def __init__(self, result: ItineraryDraft | None = None, error: Exception | None = None):
-            self.calls: list[str] = []
-            self.result = result
-            self.error = error
+    successful_response = rich_output()
+    successful_response["outcome"] = "APPLIED"
+    successful_response["operation"] = "COST_ONLY"
+    successful_response["outcome_reason"] = "Reduced the per-person food estimate."
+    successful_response["items"][2]["estimated_cost_cents"] -= 1_000
+    successful_response["estimated_total_cost_cents"] -= 1_000
 
-        def revise(
-            self,
-            context: TripContext,
-            current: ItineraryDraft,
-            current_version: int,
-            instruction: str,
-        ) -> ItineraryDraft:
-            self.calls.append(instruction)
-            if self.error is not None:
-                raise self.error
-            return self.result or current
+    provider, client = provider_with(rich_output(), invalid_response, successful_response)
+    current = provider.generate(rich_context())
+    original = current.model_copy(deep=True)
 
-    blank_provider = FakeProvider()
-    blank_result, blank_error = apply_revision(blank_provider, rich_context(), current, "   ")
-    assert blank_result == current
-    assert blank_error is None
-    assert blank_provider.calls == []
+    with pytest.raises(ItineraryProviderInputError, match="must not be blank"):
+        provider.revise(rich_context(), current, 1, "   ")
+    assert len(client.responses.calls) == 1
+    assert current == original
 
-    failed_provider = FakeProvider(error=ItineraryProviderResponseError("rejected"))
-    failed_result, failed_error = apply_revision(failed_provider, rich_context(), current, "unsafe")
-    assert failed_result == current
-    assert failed_error == "rejected"
-    assert failed_provider.calls == ["unsafe"]
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="Destination and date"):
+        provider.revise(rich_context(), current, 1, "Change the destination to Paris")
+    assert len(client.responses.calls) == 1
+    assert current == original
+
+    with pytest.raises(ItineraryProviderResponseError, match="cost-only revision"):
+        provider.revise(rich_context(), current, 1, "Make the whole trip cheaper")
+    assert len(client.responses.calls) == 2
+    assert current == original
+
+    revised = provider.revise(rich_context(), current, 1, "Make the whole trip cheaper")
+    assert len(client.responses.calls) == 3
+    assert revised.estimated_total_cost == 910
+    assert [item.title for item in revised.items] == [item.title for item in current.items]
+    assert current == original

@@ -21,7 +21,7 @@ from app.schemas.itinerary import (
 )
 
 DEFAULT_OPENAI_MODEL = "gpt-6-luna"
-PLANNING_BUDGET_COST_BASIS = "GROUP_PLANNING_CEILING"
+PER_PERSON_COST_BASIS = "PER_PERSON"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 OPENAI_MAX_RETRIES = 0
 MIN_TIMEOUT_SECONDS = 1.0
@@ -190,7 +190,7 @@ class GeneratedItineraryItem(BaseModel):
 class GeneratedItineraryDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cost_basis: Literal["GROUP_PLANNING_CEILING"]
+    cost_basis: Literal["PER_PERSON"]
     currency: str = Field(min_length=3, max_length=3)
     items: list[GeneratedItineraryItem] = Field(min_length=5)
     estimated_total_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
@@ -218,7 +218,7 @@ class RevisionItineraryItem(BaseModel):
 class RevisionCurrentDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    cost_basis: Literal["GROUP_PLANNING_CEILING"]
+    cost_basis: Literal["PER_PERSON"]
     currency: str = Field(min_length=3, max_length=3)
     items: list[RevisionItineraryItem] = Field(min_length=1)
     estimated_total_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
@@ -234,16 +234,17 @@ class GeneratedRevisionDraft(RevisionCurrentDraft):
     replacement_target: RevisionTarget | None = None
 
 
-SYSTEM_INSTRUCTIONS = """You generate a structured group-trip itinerary.
-Use only the destination, dates, authoritative group planning budget ceiling, currency, group size, interests,
-food preferences, travel preferences, pace, mobility preference, weather, and constraints supplied
-by the application. Weather is optional: when it is unavailable, do not invent weather conditions.
-All estimated costs use the GROUP_PLANNING_CEILING basis supplied by the application. Include at least one cost line for every required
+SYSTEM_INSTRUCTIONS = """You generate a structured group-trip itinerary using per-person costs.
+Use only the destination, dates, limiting per-person budget, currency, group size, interests, food
+preferences, travel preferences, pace, mobility preference, weather, and constraints supplied by
+the application. Weather is optional: when it is unavailable, do not invent weather conditions.
+All estimated costs use the PER_PERSON basis. For shared costs such as lodging or local transport,
+return the estimated share for one traveler. Include at least one cost line for every required
 category: flights, lodging, food, local_transport, and activities. Organize every cost line by
-travel day, with at least one line on every day. Day numbers start at 1 and cover only the
-supplied date range. Positions must be sequential from 1 within each day. Use integer cents and
-make estimated_total_cost_cents equal the exact sum of all line-item costs. Keep that total at or
-below the authoritative group planning budget ceiling.
+travel day, with at least one line on every day. Day numbers start at 1 and cover only the supplied
+date range. Positions must be sequential from 1 within each day. Use integer cents and make
+estimated_total_cost_cents equal the exact sum of all line-item costs. Keep that total at or below
+the limiting per-person budget.
 
 For every item, provide trusted semantic metadata: tags, environment (INDOOR, OUTDOOR, or MIXED),
 mobility (LOW, MEDIUM, or HIGH), and intensity (LOW, MEDIUM, or HIGH). Do not encode metadata in
@@ -261,9 +262,10 @@ SEMANTIC, you may rebalance or replace itinerary content only when the current i
 trusted metadata, and every returned item must contain trusted metadata too. Never infer metadata
 from position or title prefixes.
 
-Always preserve the selected destination and supplied dates. Keep every day in the supplied trip
-range, positions sequential, costs nonnegative, and the exact total equal to the sum of item costs.
-Keep the total at or below the authoritative group planning budget ceiling. For an activity replacement,
+Always preserve the selected destination and supplied dates. All costs use the PER_PERSON basis;
+shared costs must be represented as one traveler's estimated share. Keep every day in the supplied
+trip range, positions sequential, costs nonnegative, and the exact total equal to the sum of item
+costs. Keep the total at or below the limiting per-person budget. For an activity replacement,
 return replacement_target identifying the exact existing day, position, and title being replaced.
 Return APPLIED only when the requested
 change was made, NO_CHANGE when the current itinerary already satisfies the request, or UNSUPPORTED
@@ -336,7 +338,7 @@ class OpenAIItineraryProvider:
                 "end_date": context.end_date,
                 "number_of_days": travel_days,
             },
-            "planning_budget_ceiling": {
+            "limiting_per_person_budget": {
                 "amount_cents": budget_cents,
                 "currency": currency,
             },
@@ -346,7 +348,8 @@ class OpenAIItineraryProvider:
             "required_cost_categories": [category.value for category in CostCategory],
             "constraints": [
                 "Keep the selected destination unchanged.",
-                "Treat all costs as unverified planning estimates under the supplied group planning ceiling.",
+                "Treat all costs as unverified per-person planning estimates.",
+                "Represent shared costs as the estimated share for one traveler.",
                 "Do not make voting, authorization, approval, or membership decisions.",
             ],
         }
@@ -423,7 +426,7 @@ class OpenAIItineraryProvider:
         try:
             current_payload = RevisionCurrentDraft.model_validate(
                 {
-                    "cost_basis": PLANNING_BUDGET_COST_BASIS,
+                    "cost_basis": PER_PERSON_COST_BASIS,
                     "currency": currency,
                     "items": current_items,
                     "estimated_total_cost_cents": current_total_cents,
@@ -452,7 +455,7 @@ class OpenAIItineraryProvider:
                 "end_date": context.end_date,
                 "number_of_days": travel_days,
             },
-            "planning_budget_ceiling": {
+            "limiting_per_person_budget": {
                 "amount_cents": budget_cents,
                 "currency": currency,
             },
@@ -547,7 +550,7 @@ def validate_context(context: TripContext) -> tuple[int, int, str, str, int]:
     if travel_days > MAX_TRAVEL_DAYS:
         raise ItineraryProviderInputError(f"Trip length must not exceed {MAX_TRAVEL_DAYS} days")
 
-    budget_cents = amount_to_cents(context.budget.max_amount, "Group budget")
+    budget_cents = amount_to_cents(context.budget.max_amount, "Limiting per-person budget")
     currency = context.budget.currency.strip().upper()
     if len(currency) != 3 or not currency.isalpha():
         raise ItineraryProviderInputError("Budget currency must be a three-letter code")
@@ -704,7 +707,7 @@ def validate_output(
         )
     if draft.estimated_total_cost_cents > budget_cents:
         raise ItineraryProviderResponseError(
-            "Estimated total cost exceeds the authoritative planning budget ceiling"
+            "Estimated per-person total cost exceeds the limiting per-person budget"
         )
 
 
@@ -886,7 +889,7 @@ def validate_revision_draft_common(
     if draft.estimated_total_cost_cents != item_total_cents:
         raise error_type("Estimated total cost must equal the sum of itinerary item costs")
     if draft.estimated_total_cost_cents > budget_cents:
-        raise error_type("Estimated total cost exceeds the authoritative planning budget ceiling")
+        raise error_type("Estimated per-person total cost exceeds the limiting per-person budget")
 
 
 def validate_current_revision_draft(

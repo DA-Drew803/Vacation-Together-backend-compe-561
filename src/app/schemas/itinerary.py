@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Budget(BaseModel):
-    """The authoritative planning ceiling supplied for the shared itinerary."""
+    """The limiting per-person budget supplied by deterministic group matching."""
 
     max_amount: float = Field(gt=0)
     currency: str = "USD"

@@ -62,7 +62,7 @@ def context() -> TripContext:
 
 def valid_output() -> dict[str, Any]:
     return {
-        "cost_basis": "GROUP_PLANNING_CEILING",
+        "cost_basis": "PER_PERSON",
         "destination_name": "San Diego",
         "start_date": "2027-06-10",
         "end_date": "2027-06-12",
@@ -154,7 +154,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
         "end_date": "2027-06-12",
         "number_of_days": 3,
     }
-    assert request_context["planning_budget_ceiling"] == {
+    assert request_context["limiting_per_person_budget"] == {
         "amount_cents": 30_000,
         "currency": "USD",
     }
@@ -206,7 +206,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
                 ],
                 "estimated_total_cost_cents": 35_000,
             },
-            "exceeds the authoritative planning budget ceiling",
+            "exceeds the limiting per-person budget",
         ),
         (
             {
