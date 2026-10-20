@@ -123,7 +123,10 @@ def revision_output(
     output = {
         "outcome": outcome,
         "outcome_reason": "The requested change was applied safely.",
-        "cost_basis": "PER_PERSON",
+        "cost_basis": "GROUP_PLANNING_CEILING",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": [
             {
@@ -197,7 +200,10 @@ def cost_only_output_for(
     return {
         "outcome": outcome,
         "outcome_reason": "The requested cost change was evaluated safely.",
-        "cost_basis": "PER_PERSON",
+        "cost_basis": "GROUP_PLANNING_CEILING",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": items,
         "estimated_total_cost_cents": total_cents,
@@ -277,7 +283,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
     )
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity categories"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(
             trip_context(),
             draft,
@@ -404,7 +410,7 @@ def test_generation_rejects_noncanonical_title_boundaries(
 def test_walking_reduction_is_rejected_without_measurable_fields() -> None:
     provider, client = provider_with(revision_output(target="walking"))
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="cannot be verified"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, "Reduce walking on Day 3")
 
     assert client.responses.calls == []
@@ -576,7 +582,7 @@ def test_activity_replacement_rejects_ambiguous_requested_replacement() -> None:
 def test_activity_replacements_are_rejected_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity categories"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
     assert client.responses.calls == []
@@ -594,7 +600,7 @@ def test_activity_replacements_are_rejected_before_provider_call(instruction: st
 def test_interest_revisions_are_disabled_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity tags"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
     assert client.responses.calls == []
@@ -615,7 +621,7 @@ def test_revision_rejects_inconsistent_output_total() -> None:
         ("missing_day", "every travel day"),
         ("position_gap", "sequential positions"),
         ("inconsistent_total", "equal the sum"),
-        ("over_budget", "exceeds the limiting per-person budget"),
+        ("over_budget", "exceeds the authoritative planning budget ceiling"),
         ("blank_title", "nonblank and trimmed"),
         ("untrimmed_title", "nonblank and trimmed"),
         ("overlong_title", "invalid or unsupported data"),
@@ -855,7 +861,9 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         seed_itinerary(db, context)
         approve_first_member(db, context)
 
-        with pytest.raises(ItineraryRevisionUnsupportedError, match="structured activity tags"):
+        with pytest.raises(
+            ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"
+        ):
             itinerary_service.execute_ai_revision(
                 db,
                 context,
@@ -886,7 +894,7 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
 
         with pytest.raises(
             ItineraryRevisionUnsupportedError,
-            match="structured activity categories",
+            match="provider-generated trusted draft",
         ):
             itinerary_service.execute_ai_revision(
                 db,

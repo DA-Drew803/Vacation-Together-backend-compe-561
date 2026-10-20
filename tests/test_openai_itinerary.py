@@ -62,7 +62,10 @@ def context() -> TripContext:
 
 def valid_output() -> dict[str, Any]:
     return {
-        "cost_basis": "PER_PERSON",
+        "cost_basis": "GROUP_PLANNING_CEILING",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
         "currency": "USD",
         "items": [
             {
@@ -143,7 +146,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
     assert call["model"] == "test-model"
     assert call["timeout"] == 12
     assert call["store"] is False
-    assert call["text_format"].__name__ == "_GeneratedItineraryDraft"
+    assert call["text_format"].__name__ == "GeneratedItineraryDraft"
     request_context = json.loads(call["input"][1]["content"])
     assert request_context["selected_destination"] == "San Diego"
     assert request_context["travel_dates"] == {
@@ -151,7 +154,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
         "end_date": "2027-06-12",
         "number_of_days": 3,
     }
-    assert request_context["limiting_per_person_budget"] == {
+    assert request_context["planning_budget_ceiling"] == {
         "amount_cents": 30_000,
         "currency": "USD",
     }
@@ -203,7 +206,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
                 ],
                 "estimated_total_cost_cents": 35_000,
             },
-            "exceeds the limiting per-person budget",
+            "exceeds the authoritative planning budget ceiling",
         ),
         (
             {
