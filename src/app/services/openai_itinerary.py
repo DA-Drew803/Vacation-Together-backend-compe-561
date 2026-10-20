@@ -142,14 +142,13 @@ class _GeneratedItineraryDraft(BaseModel):
 
 
 class _RevisionItineraryItem(BaseModel):
-    """Provider-only view of a canonical itinerary item during revision."""
+    """Category-free provider view of a persisted itinerary item during revision."""
 
     model_config = ConfigDict(extra="forbid")
 
-    day_number: int = Field(ge=1)
+    day_number: int = Field(ge=1, le=MAX_TRAVEL_DAYS)
     position: int = Field(ge=1)
-    category: CostCategory
-    title: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=MAX_TITLE_LENGTH)
     estimated_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
 
 
@@ -181,19 +180,17 @@ decisions, approvals, or a different destination.
 """
 
 
-REVISION_SYSTEM_INSTRUCTIONS = """You revise an existing structured per-person trip itinerary.
-Apply the member's instruction when it is feasible and safe. Preserve the selected destination,
-travel dates, and all unrelated itinerary content wherever practical. If the instruction names a
-specific day, copy every other day's items exactly, including category, title, position, and cost.
-Keep at least one cost line for flights, lodging, food, local_transport, and activities, with at
-least one line on every travel day and sequential positions starting at 1. All amounts use a
-PER_PERSON basis and integer cents. The total must exactly equal the line-item sum and must not
-exceed the limiting per-person budget. Return APPLIED for a feasible revision, NO_CHANGE when the
-current content already satisfies it, or UNSUPPORTED when it requires changing destination or
-dates, exceeds constraints, requests unavailable real-time facts, or otherwise cannot be applied
-safely. For NO_CHANGE or UNSUPPORTED, copy the current items and total exactly. Estimates are not
-verified availability, live prices, booking quotes, or current weather. Never make authorization,
-voting, approval, or membership decisions.
+REVISION_SYSTEM_INSTRUCTIONS = """You revise only the estimated per-person costs of one requested
+travel day in an existing trip itinerary. Copy every item's day number, position, and title exactly
+and preserve the item count and ordering. Copy every cost outside the requested day exactly. Within
+the requested day, reduce one or more estimated costs without adding, removing, renaming, or
+reordering items. All amounts use a PER_PERSON basis and integer cents. The total must exactly equal
+the line-item sum and must not exceed the limiting per-person budget. Return APPLIED only when the
+requested day's total cost strictly decreases, NO_CHANGE when no safe reduction is available, or
+UNSUPPORTED when the request cannot be performed within these constraints. For NO_CHANGE or
+UNSUPPORTED, copy the current items and total exactly. Estimates are not verified availability,
+live prices, booking quotes, or current weather. Never make authorization, voting, approval, or
+membership decisions.
 """
 
 
@@ -334,13 +331,24 @@ class OpenAIItineraryProvider:
             "Current itinerary total",
             allow_zero=True,
         )
-        current_payload = _RevisionCurrentDraft.model_validate(
-            {
-                "cost_basis": "PER_PERSON",
-                "currency": currency,
-                "items": current_items,
-                "estimated_total_cost_cents": current_total_cents,
-            }
+        try:
+            current_payload = _RevisionCurrentDraft.model_validate(
+                {
+                    "cost_basis": "PER_PERSON",
+                    "currency": currency,
+                    "items": current_items,
+                    "estimated_total_cost_cents": current_total_cents,
+                }
+            )
+        except ValidationError as error:
+            raise ItineraryProviderInputError(
+                "Current itinerary contains invalid or unsupported data"
+            ) from error
+        _validate_current_revision_draft(
+            current_payload,
+            travel_days,
+            budget_cents,
+            currency,
         )
         _validate_revision_intent_against_current(intent, current_payload)
 
@@ -360,7 +368,6 @@ class OpenAIItineraryProvider:
             "current_itinerary_version": current_version,
             "current_itinerary": current_payload.model_dump(mode="json"),
             "revision_instruction": normalized_instruction,
-            "required_cost_categories": [category.value for category in CostCategory],
         }
 
         try:
@@ -394,15 +401,12 @@ class OpenAIItineraryProvider:
                 "Itinerary currency does not match the trip budget"
             )
         if revised.outcome == "APPLIED":
-            try:
-                generated_revision = _GeneratedItineraryDraft.model_validate(
-                    revised.model_dump(exclude={"outcome", "outcome_reason"})
-                )
-            except ValidationError as error:
-                raise ItineraryProviderResponseError(
-                    "OpenAI returned an incomplete or invalid itinerary revision"
-                ) from error
-            _validate_output(generated_revision, travel_days, budget_cents, currency)
+            _validate_applied_revision_draft(
+                revised,
+                travel_days,
+                budget_cents,
+                currency,
+            )
         content_changed = _validate_revision_output(
             revised,
             current_payload,
@@ -540,10 +544,6 @@ def _cents_to_float(cents: int) -> float:
     return float(Decimal(cents) / Decimal(100))
 
 
-def _category_label(category: CostCategory) -> str:
-    return category.value.replace("_", " ").title()
-
-
 def _normalize_revision_instruction(instruction: str) -> str:
     printable = "".join(character for character in instruction if character.isprintable())
     normalized = " ".join(printable.split())
@@ -652,29 +652,88 @@ def _is_supported_activity_phrase(value: str) -> bool:
 
 
 def _serialize_current_draft(current: ItineraryDraft) -> list[dict[str, Any]]:
-    parsed_items = [(item, *_split_category_title(item.title)) for item in current.items]
-    assigned_categories = {category for _, category, _ in parsed_items if category is not None}
-    missing_categories = iter(
-        category.value for category in CostCategory if category.value not in assigned_categories
-    )
-    serialized: list[dict[str, Any]] = []
-    for item, category, title in parsed_items:
-        if category is None:
-            category = next(missing_categories, CostCategory.ACTIVITIES.value)
-        serialized.append(
-            {
-                "day_number": item.day_number,
-                "position": item.position,
-                "category": category,
-                "title": title,
-                "estimated_cost_cents": _amount_to_cents(
-                    item.estimated_cost,
-                    "Current itinerary item cost",
-                    allow_zero=True,
-                ),
-            }
+    return [
+        {
+            "day_number": item.day_number,
+            "position": item.position,
+            "title": item.title,
+            "estimated_cost_cents": _amount_to_cents(
+                item.estimated_cost,
+                "Current itinerary item cost",
+                allow_zero=True,
+            ),
+        }
+        for item in current.items
+    ]
+
+
+def _validate_revision_draft_common(
+    draft: _RevisionCurrentDraft,
+    travel_days: int,
+    budget_cents: int,
+    currency: str,
+    error_type: type[ItineraryProviderInputError | ItineraryProviderResponseError],
+) -> None:
+    if draft.currency.upper() != currency:
+        raise error_type("Itinerary currency does not match the trip budget")
+
+    expected_days = set(range(1, travel_days + 1))
+    actual_days = {item.day_number for item in draft.items}
+    if actual_days != expected_days:
+        raise error_type(
+            "Itinerary must include cost items for every travel day and no days outside the trip"
         )
-    return serialized
+
+    items_by_day: dict[int, list[_RevisionItineraryItem]] = {}
+    for item in draft.items:
+        items_by_day.setdefault(item.day_number, []).append(item)
+        if not item.title.strip() or item.title != item.title.strip():
+            raise error_type("Itinerary item titles must be nonblank and trimmed")
+
+    for items in items_by_day.values():
+        if len(items) > MAX_ITEMS_PER_DAY:
+            raise error_type(f"Itinerary must not exceed {MAX_ITEMS_PER_DAY} items per day")
+        positions = [item.position for item in items]
+        if positions != list(range(1, len(items) + 1)):
+            raise error_type(
+                "Itinerary items must be ordered with sequential positions from 1 within each day"
+            )
+
+    item_total_cents = sum(item.estimated_cost_cents for item in draft.items)
+    if draft.estimated_total_cost_cents != item_total_cents:
+        raise error_type("Estimated total cost must equal the sum of itinerary item costs")
+    if draft.estimated_total_cost_cents > budget_cents:
+        raise error_type("Estimated per-person total cost exceeds the limiting per-person budget")
+
+
+def _validate_current_revision_draft(
+    draft: _RevisionCurrentDraft,
+    travel_days: int,
+    budget_cents: int,
+    currency: str,
+) -> None:
+    _validate_revision_draft_common(
+        draft,
+        travel_days,
+        budget_cents,
+        currency,
+        ItineraryProviderInputError,
+    )
+
+
+def _validate_applied_revision_draft(
+    draft: _GeneratedRevisionDraft,
+    travel_days: int,
+    budget_cents: int,
+    currency: str,
+) -> None:
+    _validate_revision_draft_common(
+        draft,
+        travel_days,
+        budget_cents,
+        currency,
+        ItineraryProviderResponseError,
+    )
 
 
 def _validate_revision_intent_against_current(
@@ -688,28 +747,9 @@ def _validate_revision_intent_against_current(
             )
         return
     if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
-        target_text = intent.target_text or ""
-        matching = [
-            item for item in current.items if _normalized_phrase_matches(target_text, item.title)
-        ]
-        if len(matching) != 1:
-            raise ItineraryRevisionUnsupportedError(
-                "An activity replacement must identify exactly one current activity"
-            )
-        return
-
-
-def _split_category_title(title: str) -> tuple[str | None, str]:
-    normalized = title.strip()
-    for category in CostCategory:
-        prefix = f"{_category_label(category)}:"
-        if normalized.casefold().startswith(prefix.casefold()):
-            item_title = normalized[len(prefix) :].strip()
-            if item_title:
-                return category.value, item_title
-    # Category is provider-only metadata. The serializer assigns an internal
-    # fallback for unprefixed canonical titles without changing their text.
-    return None, normalized
+        raise ItineraryRevisionUnsupportedError(
+            "Activity replacement requires trusted structured activity categories"
+        )
 
 
 def _to_itinerary_draft(
@@ -749,7 +789,6 @@ def _revision_item_fingerprint(
     return (
         item.day_number,
         item.position,
-        item.category,
         item.title,
         item.estimated_cost_cents,
     )
@@ -770,16 +809,11 @@ def _validate_revision_output(
         raise ItineraryProviderResponseError(
             "No-change and unsupported revisions must preserve the current itinerary"
         )
-    if unchanged:
-        return False
-
     if revised.outcome != "APPLIED":
         return False
 
     if intent.kind == RevisionIntentKind.CHEAPER_DAY:
         _validate_cheaper_day(revised, current, intent)
-    elif intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
-        _validate_activity_replacement(revised, current, intent)
     return True
 
 
@@ -793,6 +827,16 @@ def _validate_cheaper_day(
     revised_target_items = [item for item in revised.items if item.day_number == target_day]
     if not current_target_items or not revised_target_items:
         raise ItineraryProviderResponseError("The requested day is not present in the itinerary")
+    if len(current.items) != len(revised.items):
+        raise ItineraryProviderResponseError(
+            "A cheaper-day revision must preserve the item count and ordering"
+        )
+    current_structure = [(item.day_number, item.position, item.title) for item in current.items]
+    revised_structure = [(item.day_number, item.position, item.title) for item in revised.items]
+    if revised_structure != current_structure:
+        raise ItineraryProviderResponseError(
+            "A cheaper-day revision may change only estimated costs on the requested day"
+        )
     _require_unchanged_items(
         [item for item in current.items if item.day_number != target_day],
         [item for item in revised.items if item.day_number != target_day],
@@ -804,62 +848,6 @@ def _validate_cheaper_day(
         raise ItineraryProviderResponseError(
             "A cheaper-day revision must strictly reduce that day's estimated cost"
         )
-
-
-def _validate_activity_replacement(
-    revised: _GeneratedRevisionDraft,
-    current: _RevisionCurrentDraft,
-    intent: RevisionIntent,
-) -> None:
-    target_text = intent.target_text or ""
-    replacement_text = intent.replacement_text or ""
-    matching = [
-        item for item in current.items if _normalized_phrase_matches(target_text, item.title)
-    ]
-    if len(matching) != 1:
-        raise ItineraryRevisionUnsupportedError(
-            "An activity replacement must identify exactly one current activity"
-        )
-    target = matching[0]
-    unrelated = [
-        item
-        for item in current.items
-        if not (item.day_number == target.day_number and item.position == target.position)
-    ]
-    revised_unrelated = [
-        item
-        for item in revised.items
-        if not (item.day_number == target.day_number and item.position == target.position)
-    ]
-    _require_unchanged_items(
-        unrelated,
-        revised_unrelated,
-        "An activity replacement must preserve all unrelated itinerary content",
-    )
-    replacements = [
-        item
-        for item in revised.items
-        if item.day_number == target.day_number and item.position == target.position
-    ]
-    if len(replacements) != 1:
-        raise ItineraryProviderResponseError("The targeted activity must have one replacement")
-    replacement = replacements[0]
-    if (
-        replacement.category != CostCategory.ACTIVITIES
-        or replacement.title == target.title
-        or _normalized_phrase_matches(target_text, replacement.title)
-        or not _normalized_phrase_matches(replacement_text, replacement.title)
-    ):
-        raise ItineraryProviderResponseError(
-            "The targeted activity was not replaced by the requested activity"
-        )
-
-
-def _normalized_phrase_matches(phrase: str, value: str) -> bool:
-    normalized_phrase = " ".join(phrase.casefold().split())
-    normalized_value = " ".join(value.casefold().split())
-    phrase_pattern = r"(?<!\w)" + re.escape(normalized_phrase).replace(r"\ ", r"\s+") + r"(?!\w)"
-    return re.search(phrase_pattern, normalized_value) is not None
 
 
 def _require_unchanged_items(
