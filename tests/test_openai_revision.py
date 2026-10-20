@@ -180,8 +180,8 @@ def provider_with(output: Any = None, error: Exception | None = None):
 @pytest.mark.parametrize(
     ("instruction", "target", "expected_title"),
     [
-        ("Make Day 2 cheaper.", "cheaper", "Food: Budget-friendly daily meals"),
-        ("Replace the museum with a park.", "activity", "Activities: Central park visit"),
+        ("Make Day 2 cheaper.", "cheaper", "Budget-friendly daily meals"),
+        ("Replace the museum with a park.", "activity", "Central park visit"),
     ],
 )
 def test_revision_provider_applies_supported_changes(
@@ -193,8 +193,61 @@ def test_revision_provider_applies_supported_changes(
 
     revised = provider.revise(trip_context(), current_draft(), 1, instruction)
 
-    assert any(item.title.startswith(expected_title) for item in revised.items)
+    assert any(item.title == expected_title for item in revised.items)
     assert revised.estimated_total_cost <= 240
+
+
+def test_revision_accepts_plain_canonical_titles() -> None:
+    draft = current_draft().model_copy(deep=True)
+    draft.items[4].title = "Museum visit"
+    draft.items.append(
+        ItineraryItemInput(
+            day_number=3,
+            position=2,
+            title="Arrival walk",
+            estimated_cost=0,
+        )
+    )
+    output = revision_output(target="activity")
+    output["items"].append(
+        {
+            "day_number": 3,
+            "position": 2,
+            "category": "activities",
+            "title": "Arrival walk",
+            "estimated_cost_cents": 0,
+        }
+    )
+    provider, client = provider_with(output)
+
+    revised = provider.revise(
+        trip_context(),
+        draft,
+        1,
+        "Replace the museum with a park",
+    )
+
+    assert client.responses.calls
+    assert any(item.title == "Central park visit" for item in revised.items)
+    assert any(item.title == "Arrival walk" for item in revised.items)
+
+
+def test_revision_accepts_fully_unprefixed_canonical_draft() -> None:
+    draft = current_draft().model_copy(deep=True)
+    for item in draft.items:
+        item.title = item.title.split(":", 1)[1].strip()
+    provider, client = provider_with(revision_output())
+
+    revised = provider.revise(trip_context(), draft, 1, "Make Day 2 cheaper")
+
+    assert client.responses.calls
+    assert [item.title for item in revised.items] == [
+        "Round-trip airfare estimate",
+        "Two nights of lodging",
+        "Budget-friendly daily meals",
+        "Transit pass",
+        "Museum admission",
+    ]
 
 
 def test_walking_reduction_is_rejected_without_measurable_fields() -> None:
@@ -640,9 +693,7 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
                 db,
                 context,
                 MEMBER_2,
-                RevisionInput(
-                    instruction="Adjust activities to better match group interests"
-                ),
+                RevisionInput(instruction="Adjust activities to better match group interests"),
                 provider,
             )
 

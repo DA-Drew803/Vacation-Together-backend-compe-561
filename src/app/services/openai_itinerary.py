@@ -141,7 +141,28 @@ class _GeneratedItineraryDraft(BaseModel):
     estimated_total_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
 
 
-class _GeneratedRevisionDraft(_GeneratedItineraryDraft):
+class _RevisionItineraryItem(BaseModel):
+    """Provider-only view of a canonical itinerary item during revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    day_number: int = Field(ge=1)
+    position: int = Field(ge=1)
+    category: CostCategory
+    title: str = Field(min_length=1)
+    estimated_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
+
+
+class _RevisionCurrentDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cost_basis: Literal["PER_PERSON"]
+    currency: str = Field(min_length=3, max_length=3)
+    items: list[_RevisionItineraryItem] = Field(min_length=1)
+    estimated_total_cost_cents: int = Field(ge=0, le=MAX_DATABASE_AMOUNT_CENTS)
+
+
+class _GeneratedRevisionDraft(_RevisionCurrentDraft):
     outcome: Literal["APPLIED", "NO_CHANGE", "UNSUPPORTED"]
     outcome_reason: str = Field(min_length=1, max_length=240)
 
@@ -285,7 +306,7 @@ class OpenAIItineraryProvider:
                 ItineraryItemInput(
                     day_number=item.day_number,
                     position=item.position,
-                    title=f"{_category_label(item.category)}: {item.title.strip()}",
+                    title=item.title.strip(),
                     estimated_cost=_cents_to_float(item.estimated_cost_cents),
                 )
                 for item in parsed.items
@@ -313,7 +334,7 @@ class OpenAIItineraryProvider:
             "Current itinerary total",
             allow_zero=True,
         )
-        current_payload = _GeneratedItineraryDraft.model_validate(
+        current_payload = _RevisionCurrentDraft.model_validate(
             {
                 "cost_basis": "PER_PERSON",
                 "currency": currency,
@@ -321,7 +342,6 @@ class OpenAIItineraryProvider:
                 "estimated_total_cost_cents": current_total_cents,
             }
         )
-        _validate_output(current_payload, travel_days, budget_cents, currency)
         _validate_revision_intent_against_current(intent, current_payload)
 
         request_context = {
@@ -369,7 +389,20 @@ class OpenAIItineraryProvider:
                 "OpenAI returned an incomplete or invalid itinerary revision"
             ) from error
 
-        _validate_output(revised, travel_days, budget_cents, currency)
+        if revised.currency.upper() != currency:
+            raise ItineraryProviderResponseError(
+                "Itinerary currency does not match the trip budget"
+            )
+        if revised.outcome == "APPLIED":
+            try:
+                generated_revision = _GeneratedItineraryDraft.model_validate(
+                    revised.model_dump(exclude={"outcome", "outcome_reason"})
+                )
+            except ValidationError as error:
+                raise ItineraryProviderResponseError(
+                    "OpenAI returned an incomplete or invalid itinerary revision"
+                ) from error
+            _validate_output(generated_revision, travel_days, budget_cents, currency)
         content_changed = _validate_revision_output(
             revised,
             current_payload,
@@ -381,7 +414,7 @@ class OpenAIItineraryProvider:
             )
         if not content_changed:
             return current.model_copy(deep=True)
-        return _to_itinerary_draft(revised)
+        return _to_itinerary_draft(revised, current_payload, current)
 
 
 def _validate_context(context: TripContext) -> tuple[int, int, str, str, int]:
@@ -402,9 +435,7 @@ def _validate_context(context: TripContext) -> tuple[int, int, str, str, int]:
 
     travel_days = (end_date - start_date).days + 1
     if travel_days > MAX_TRAVEL_DAYS:
-        raise ItineraryProviderInputError(
-            f"Trip length must not exceed {MAX_TRAVEL_DAYS} days"
-        )
+        raise ItineraryProviderInputError(f"Trip length must not exceed {MAX_TRAVEL_DAYS} days")
 
     budget_cents = _amount_to_cents(context.budget.max_amount, "Group budget")
     currency = context.budget.currency.strip().upper()
@@ -459,7 +490,9 @@ def _validate_output(
     for item in draft.items:
         items_by_day.setdefault(item.day_number, []).append(item)
         if not item.title.strip() or item.title != item.title.strip():
-            raise ItineraryProviderResponseError("Itinerary item titles must be nonblank and trimmed")
+            raise ItineraryProviderResponseError(
+                "Itinerary item titles must be nonblank and trimmed"
+            )
 
     for items in items_by_day.values():
         if len(items) > MAX_ITEMS_PER_DAY:
@@ -495,9 +528,7 @@ def _amount_to_cents(
     except InvalidOperation as error:
         raise ItineraryProviderInputError(f"{field_name} must be a valid amount") from error
     if not cents.is_finite() or cents != cents.to_integral_value():
-        raise ItineraryProviderInputError(
-            f"{field_name} must use no more than two decimal places"
-        )
+        raise ItineraryProviderInputError(f"{field_name} must use no more than two decimal places")
     cents_value = int(cents)
     minimum = 0 if allow_zero else 1
     if cents_value < minimum or cents_value > MAX_DATABASE_AMOUNT_CENTS:
@@ -535,9 +566,7 @@ def _parse_revision_intent(instruction: str, interests: list[str]) -> RevisionIn
     normalized = instruction.casefold()
     ordinal_days = "|".join(re.escape(value) for value in ORDINAL_DAY_NUMBERS)
     day_expression = rf"(?:day(?: number)? \d{{1,2}}|the (?:{ordinal_days}) day)"
-    walking_patterns = (
-        rf"(?:reduce|limit|minimi[sz]e) walking (?:on|for) {day_expression}[.!]?",
-    )
+    walking_patterns = (rf"(?:reduce|limit|minimi[sz]e) walking (?:on|for) {day_expression}[.!]?",)
     if any(re.fullmatch(pattern, normalized) for pattern in walking_patterns):
         raise ItineraryRevisionUnsupportedError(
             "Walking reduction cannot be verified from the current itinerary fields"
@@ -623,9 +652,15 @@ def _is_supported_activity_phrase(value: str) -> bool:
 
 
 def _serialize_current_draft(current: ItineraryDraft) -> list[dict[str, Any]]:
+    parsed_items = [(item, *_split_category_title(item.title)) for item in current.items]
+    assigned_categories = {category for _, category, _ in parsed_items if category is not None}
+    missing_categories = iter(
+        category.value for category in CostCategory if category.value not in assigned_categories
+    )
     serialized: list[dict[str, Any]] = []
-    for item in current.items:
-        category, title = _split_category_title(item.title)
+    for item, category, title in parsed_items:
+        if category is None:
+            category = next(missing_categories, CostCategory.ACTIVITIES.value)
         serialized.append(
             {
                 "day_number": item.day_number,
@@ -644,7 +679,7 @@ def _serialize_current_draft(current: ItineraryDraft) -> list[dict[str, Any]]:
 
 def _validate_revision_intent_against_current(
     intent: RevisionIntent,
-    current: _GeneratedItineraryDraft,
+    current: _RevisionCurrentDraft,
 ) -> None:
     if intent.kind == RevisionIntentKind.CHEAPER_DAY:
         if not any(item.day_number == intent.target_day for item in current.items):
@@ -655,10 +690,7 @@ def _validate_revision_intent_against_current(
     if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
         target_text = intent.target_text or ""
         matching = [
-            item
-            for item in current.items
-            if item.category == CostCategory.ACTIVITIES
-            and _normalized_phrase_matches(target_text, item.title)
+            item for item in current.items if _normalized_phrase_matches(target_text, item.title)
         ]
         if len(matching) != 1:
             raise ItineraryRevisionUnsupportedError(
@@ -667,7 +699,7 @@ def _validate_revision_intent_against_current(
         return
 
 
-def _split_category_title(title: str) -> tuple[str, str]:
+def _split_category_title(title: str) -> tuple[str | None, str]:
     normalized = title.strip()
     for category in CostCategory:
         prefix = f"{_category_label(category)}:"
@@ -675,18 +707,34 @@ def _split_category_title(title: str) -> tuple[str, str]:
             item_title = normalized[len(prefix) :].strip()
             if item_title:
                 return category.value, item_title
-    raise ItineraryProviderInputError(
-        "Current itinerary items must include a supported cost-category prefix"
-    )
+    # Category is provider-only metadata. The serializer assigns an internal
+    # fallback for unprefixed canonical titles without changing their text.
+    return None, normalized
 
 
-def _to_itinerary_draft(draft: _GeneratedItineraryDraft) -> ItineraryDraft:
+def _to_itinerary_draft(
+    draft: _GeneratedRevisionDraft,
+    current_payload: _RevisionCurrentDraft,
+    current: ItineraryDraft,
+) -> ItineraryDraft:
+    canonical_titles = {(item.day_number, item.position): item.title for item in current.items}
+    current_items = {(item.day_number, item.position): item for item in current_payload.items}
+
+    def canonical_title(item: _RevisionItineraryItem) -> str:
+        key = (item.day_number, item.position)
+        previous = current_items.get(key)
+        if previous is not None and _revision_item_fingerprint(previous) == (
+            _revision_item_fingerprint(item)
+        ):
+            return canonical_titles[key]
+        return item.title.strip()
+
     return ItineraryDraft(
         items=[
             ItineraryItemInput(
                 day_number=item.day_number,
                 position=item.position,
-                title=f"{_category_label(item.category)}: {item.title.strip()}",
+                title=canonical_title(item),
                 estimated_cost=_cents_to_float(item.estimated_cost_cents),
             )
             for item in draft.items
@@ -695,7 +743,9 @@ def _to_itinerary_draft(draft: _GeneratedItineraryDraft) -> ItineraryDraft:
     )
 
 
-def _revision_item_fingerprint(item: _GeneratedItineraryItem) -> tuple[Any, ...]:
+def _revision_item_fingerprint(
+    item: _GeneratedItineraryItem | _RevisionItineraryItem,
+) -> tuple[Any, ...]:
     return (
         item.day_number,
         item.position,
@@ -707,7 +757,7 @@ def _revision_item_fingerprint(item: _GeneratedItineraryItem) -> tuple[Any, ...]
 
 def _validate_revision_output(
     revised: _GeneratedRevisionDraft,
-    current: _GeneratedItineraryDraft,
+    current: _RevisionCurrentDraft,
     intent: RevisionIntent,
 ) -> bool:
     current_fingerprint = tuple(_revision_item_fingerprint(item) for item in current.items)
@@ -735,7 +785,7 @@ def _validate_revision_output(
 
 def _validate_cheaper_day(
     revised: _GeneratedRevisionDraft,
-    current: _GeneratedItineraryDraft,
+    current: _RevisionCurrentDraft,
     intent: RevisionIntent,
 ) -> None:
     target_day = intent.target_day
@@ -758,16 +808,13 @@ def _validate_cheaper_day(
 
 def _validate_activity_replacement(
     revised: _GeneratedRevisionDraft,
-    current: _GeneratedItineraryDraft,
+    current: _RevisionCurrentDraft,
     intent: RevisionIntent,
 ) -> None:
     target_text = intent.target_text or ""
     replacement_text = intent.replacement_text or ""
     matching = [
-        item
-        for item in current.items
-        if item.category == CostCategory.ACTIVITIES
-        and _normalized_phrase_matches(target_text, item.title)
+        item for item in current.items if _normalized_phrase_matches(target_text, item.title)
     ]
     if len(matching) != 1:
         raise ItineraryRevisionUnsupportedError(
@@ -811,15 +858,13 @@ def _validate_activity_replacement(
 def _normalized_phrase_matches(phrase: str, value: str) -> bool:
     normalized_phrase = " ".join(phrase.casefold().split())
     normalized_value = " ".join(value.casefold().split())
-    phrase_pattern = (
-        r"(?<!\w)" + re.escape(normalized_phrase).replace(r"\ ", r"\s+") + r"(?!\w)"
-    )
+    phrase_pattern = r"(?<!\w)" + re.escape(normalized_phrase).replace(r"\ ", r"\s+") + r"(?!\w)"
     return re.search(phrase_pattern, normalized_value) is not None
 
 
 def _require_unchanged_items(
-    current: list[_GeneratedItineraryItem],
-    revised: list[_GeneratedItineraryItem],
+    current: list[_GeneratedItineraryItem] | list[_RevisionItineraryItem],
+    revised: list[_GeneratedItineraryItem] | list[_RevisionItineraryItem],
     message: str,
 ) -> None:
     if tuple(_revision_item_fingerprint(item) for item in current) != tuple(

@@ -129,13 +129,13 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
     assert isinstance(draft, ItineraryDraft)
     assert [item.day_number for item in draft.items] == [1, 1, 2, 2, 3]
     assert [item.position for item in draft.items] == [1, 2, 1, 2, 1]
-    assert {item.title.split(":", 1)[0] for item in draft.items} == {
-        "Flights",
-        "Lodging",
-        "Food",
-        "Local Transport",
-        "Activities",
-    }
+    assert [item.title for item in draft.items] == [
+        "Round-trip airfare estimate",
+        "Two nights of lodging",
+        "Daily meals",
+        "Transit pass",
+        "Museum admission",
+    ]
     assert draft.estimated_total_cost == 240.0
     assert sum(Decimal(str(item.estimated_cost)) for item in draft.items) == Decimal("240.0")
 
@@ -199,8 +199,7 @@ def test_successful_generation_covers_budget_categories_and_preserves_privacy() 
             {
                 **valid_output(),
                 "items": [
-                    {**item, "estimated_cost_cents": 7_000}
-                    for item in valid_output()["items"]
+                    {**item, "estimated_cost_cents": 7_000} for item in valid_output()["items"]
                 ],
                 "estimated_total_cost_cents": 35_000,
             },
@@ -277,7 +276,9 @@ def test_other_model_inputs_are_bounded_before_provider_call(
     assert client.responses.calls == []
 
 
-def test_missing_api_key_is_rejected_before_client_creation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_api_key_is_rejected_before_client_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
 
