@@ -1070,6 +1070,18 @@ def validate_cost_only_revision(
         )
 
 
+def validate_cost_only_metadata(
+    revised: GeneratedRevisionDraft,
+    current: RevisionCurrentDraft,
+) -> None:
+    current_metadata = [semantic_metadata_fingerprint(item) for item in current.items]
+    revised_metadata = [semantic_metadata_fingerprint(item) for item in revised.items]
+    if revised_metadata != current_metadata:
+        raise ItineraryProviderResponseError(
+            "A cost-only revision must preserve all semantic metadata exactly"
+        )
+
+
 def validate_revision_intent_against_current_legacy(
     intent: RevisionIntent,
     current: RevisionCurrentDraft,
@@ -1095,8 +1107,8 @@ def to_itinerary_draft(
             return canonical_titles[key]
         return item.title.strip()
 
-    return issue_trusted_draft(
-        items=[
+    draft_data = {
+        "items": [
             ItineraryItemInput(
                 day_number=item.day_number,
                 position=item.position,
@@ -1106,7 +1118,20 @@ def to_itinerary_draft(
             )
             for item in draft.items
         ],
-        estimated_total_cost=cents_to_float(draft.estimated_total_cost_cents),
+        "estimated_total_cost": cents_to_float(draft.estimated_total_cost_cents),
+    }
+    if is_issued_trusted_draft(current):
+        return issue_trusted_draft(**draft_data)
+    return ItineraryDraft(**draft_data)
+
+
+def semantic_metadata_fingerprint(item: RevisionItineraryItem) -> tuple[Any, ...]:
+    return (
+        item.category,
+        tuple(item.tags),
+        item.environment,
+        item.mobility,
+        item.intensity,
     )
 
 
@@ -1124,11 +1149,7 @@ def revision_item_fingerprint(
 def semantic_item_fingerprint(item: RevisionItineraryItem) -> tuple[Any, ...]:
     return (
         revision_item_fingerprint(item),
-        item.category,
-        tuple(item.tags),
-        item.environment,
-        item.mobility,
-        item.intensity,
+        semantic_metadata_fingerprint(item),
     )
 
 
@@ -1137,6 +1158,8 @@ def validate_revision_output(
     current: RevisionCurrentDraft,
     intent: RevisionIntent,
 ) -> bool:
+    if intent.kind in {RevisionIntentKind.CHEAPER_DAY, RevisionIntentKind.COST_ONLY}:
+        validate_cost_only_metadata(revised, current)
     current_fingerprint = tuple(revision_item_fingerprint(item) for item in current.items)
     revised_fingerprint = tuple(revision_item_fingerprint(item) for item in revised.items)
     unchanged = (
