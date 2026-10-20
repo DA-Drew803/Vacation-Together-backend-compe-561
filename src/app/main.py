@@ -5,6 +5,8 @@ from fastapi import FastAPI
 
 from app.core.database import create_db_and_tables
 from app.routers.itinerary import router as itinerary_router
+from app.routers.User import router as user_router
+
 
 APP_VERSION = "0.1.0"
 
@@ -14,14 +16,17 @@ async def lifespan(app: FastAPI):
     create_db_and_tables()
     yield
 
+
 app = FastAPI(
     title="Vacation Together API",
     version=APP_VERSION,
     description="Backend API for the Vacation Together group trip planning app.",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
+
 app.include_router(itinerary_router, prefix="/api")
+app.include_router(user_router, prefix="/api")
 
 
 @app.get("/")
@@ -40,4 +45,9 @@ def health_check() -> dict[str, str | bool]:
 
 
 def run_dev() -> None:
-    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run(
+        "app.main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+    )
