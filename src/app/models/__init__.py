@@ -3,8 +3,12 @@ from app.models.itinerary import Itinerary, ItineraryApproval, ItineraryItem, It
 
 __all__ = [
     "Base",
+    "Destination",
+    "DestinationCandidate",
+    "DestinationVote",
     "Itinerary",
     "ItineraryApproval",
     "ItineraryItem",
     "ItineraryRevision",
+    
 ]

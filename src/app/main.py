@@ -6,6 +6,8 @@ from fastapi import FastAPI
 from app.core.database import create_db_and_tables
 from app.routers.itinerary import router as itinerary_router
 
+from app.routers.destination import router as destination_router
+
 APP_VERSION = "0.1.0"
 
 
@@ -22,6 +24,7 @@ app = FastAPI(
 )
 
 app.include_router(itinerary_router, prefix="/api")
+app.include_router(destination_router, prefix="/api")
 
 
 @app.get("/")
