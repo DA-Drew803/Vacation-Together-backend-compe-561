@@ -22,7 +22,3 @@ class UserResponse(BaseModel):
     email: str
     display_name: str
     created_at: datetime
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"

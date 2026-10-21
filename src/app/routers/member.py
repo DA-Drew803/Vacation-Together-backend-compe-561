@@ -16,7 +16,6 @@ from app.schemas.member import (
 )
 from app.services import member as member_service
 
-
 router = APIRouter(
     tags=["Trip Members"],
 )
@@ -53,9 +52,7 @@ def add_trip_member(
 )
 def list_trip_members(
     trip_id: UUID,
-    current_membership: TripMember = Depends(
-        get_current_trip_member
-    ),
+    current_membership: TripMember = Depends(get_current_trip_member),
     db: Session = Depends(get_db),
 ):
     return member_service.list_trip_members(

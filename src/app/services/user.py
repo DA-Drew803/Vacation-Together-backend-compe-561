@@ -8,35 +8,25 @@ from sqlalchemy.orm import Session
 
 from app.models.User import User
 
-
-_PASSWORD_ITERATIONS = 310_000
+PASSWORD_ITERATIONS = 310_000
 
 
 def hash_password(password: str) -> str:
     salt = secrets.token_bytes(16)
-
     password_digest = hashlib.pbkdf2_hmac(
         "sha256",
         password.encode("utf-8"),
         salt,
-        _PASSWORD_ITERATIONS,
+        PASSWORD_ITERATIONS,
     )
-
     return (
-        f"pbkdf2_sha256${_PASSWORD_ITERATIONS}$"
-        f"{salt.hex()}${password_digest.hex()}"
+        "pbkdf2_sha256$" + str(PASSWORD_ITERATIONS) + "$" + salt.hex() + "$" + password_digest.hex()
     )
 
 
-def verify_password(
-    password: str,
-    stored_password_hash: str,
-) -> bool:
+def verify_password(password: str, stored_password_hash: str) -> bool:
     try:
-        algorithm, iterations, salt_hex, digest_hex = (
-            stored_password_hash.split("$")
-        )
-
+        algorithm, iterations, salt_hex, digest_hex = stored_password_hash.split("$")
         if algorithm != "pbkdf2_sha256":
             return False
 
@@ -46,28 +36,17 @@ def verify_password(
             bytes.fromhex(salt_hex),
             int(iterations),
         )
-
-        return hmac.compare_digest(
-            password_digest.hex(),
-            digest_hex,
-        )
-
+        return hmac.compare_digest(password_digest.hex(), digest_hex)
     except (ValueError, TypeError):
         return False
 
 
-def get_user_by_id(
-    db: Session,
-    user_id: UUID,
-) -> User | None:
+def get_user_by_id(db: Session, user_id: UUID) -> User | None:
     statement = select(User).where(User.id == user_id)
     return db.scalar(statement)
 
 
-def get_user_by_email(
-    db: Session,
-    email: str,
-) -> User | None:
+def get_user_by_email(db: Session, email: str) -> User | None:
     statement = select(User).where(User.email == email)
     return db.scalar(statement)
 
@@ -78,9 +57,7 @@ def create_user(
     display_name: str,
     password: str,
 ) -> User:
-    existing_user = get_user_by_email(db, email)
-
-    if existing_user is not None:
+    if get_user_by_email(db, email) is not None:
         raise ValueError("A user with this email already exists")
 
     user = User(
@@ -88,9 +65,7 @@ def create_user(
         display_name=display_name,
         password_hash=hash_password(password),
     )
-
     db.add(user)
     db.commit()
     db.refresh(user)
-
     return user

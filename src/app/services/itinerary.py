@@ -1,5 +1,9 @@
+from __future__ import annotations
+
+import logging
 from collections import defaultdict
 from decimal import Decimal
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from sqlalchemy import delete, select
@@ -21,6 +25,12 @@ from app.schemas.itinerary import (
     TripContext,
 )
 
+if TYPE_CHECKING:
+    from app.services.openai_itinerary import ItineraryDraftProvider, ItineraryRevisionProvider
+
+
+logger = logging.getLogger(__name__)
+
 
 class ItineraryConflictError(ValueError):
     pass
@@ -30,11 +40,11 @@ class ItineraryInvalidError(ValueError):
     pass
 
 
-def _money(value: float | Decimal) -> float:
+def money_value(value: float | Decimal) -> float:
     return float(value)
 
 
-def _uuid(value: str | UUID, field_name: str) -> UUID:
+def parse_uuid(value: str | UUID, field_name: str) -> UUID:
     if isinstance(value, UUID):
         return value
     try:
@@ -43,7 +53,7 @@ def _uuid(value: str | UUID, field_name: str) -> UUID:
         raise ItineraryInvalidError(f"{field_name} must be a valid UUID") from None
 
 
-def _decimal(value: float | Decimal) -> Decimal:
+def decimal_value(value: float | Decimal) -> Decimal:
     return Decimal(str(value))
 
 
@@ -55,7 +65,7 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
                 "id": str(item.id),
                 "position": item.position,
                 "title": item.title,
-                "estimated_cost": _money(item.estimated_cost),
+                "estimated_cost": money_value(item.estimated_cost),
             }
         )
 
@@ -70,7 +80,7 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
             for day_number, activities in sorted(days.items())
         ],
         "estimated_total_cost": {
-            "max_amount": _money(itinerary.estimated_total_cost),
+            "max_amount": money_value(itinerary.estimated_total_cost),
             "currency": currency,
         },
     }
@@ -88,7 +98,7 @@ def serialize_revision(revision: ItineraryRevision) -> dict:
 def get_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary | None:
     statement = (
         select(Itinerary)
-        .where(Itinerary.trip_id == _uuid(trip_id, "trip_id"))
+        .where(Itinerary.trip_id == parse_uuid(trip_id, "trip_id"))
         .options(selectinload(Itinerary.items))
     )
     if lock:
@@ -103,7 +113,7 @@ def require_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itine
     return itinerary
 
 
-def _replace_items(
+def replace_items(
     itinerary: Itinerary,
     item_inputs: list[ItineraryItemInput],
 ) -> None:
@@ -112,13 +122,13 @@ def _replace_items(
             day_number=item.day_number,
             position=item.position,
             title=item.title,
-            estimated_cost=_decimal(item.estimated_cost),
+            estimated_cost=decimal_value(item.estimated_cost),
         )
         for item in item_inputs
     ]
 
 
-def _item_fingerprint(items: list[ItineraryItem] | list[ItineraryItemInput]) -> tuple:
+def item_fingerprint(items: list[ItineraryItem] | list[ItineraryItemInput]) -> tuple:
     return tuple(
         sorted(
             (
@@ -145,17 +155,17 @@ def generate_itinerary_for_selected_destination(
         raise ItineraryConflictError("Trip does not have a selected destination")
 
     itinerary = Itinerary(
-        trip_id=_uuid(context.trip_id, "trip_id"),
-        destination_id=_uuid(context.selected_destination_id, "selected_destination_id"),
+        trip_id=parse_uuid(context.trip_id, "trip_id"),
+        destination_id=parse_uuid(context.selected_destination_id, "selected_destination_id"),
         version=1,
         status="DRAFT",
-        estimated_total_cost=_decimal(draft.estimated_total_cost),
+        estimated_total_cost=decimal_value(draft.estimated_total_cost),
         items=[
             ItineraryItem(
                 day_number=item.day_number,
                 position=item.position,
                 title=item.title,
-                estimated_cost=_decimal(item.estimated_cost),
+                estimated_cost=decimal_value(item.estimated_cost),
             )
             for item in draft.items
         ],
@@ -174,6 +184,25 @@ def generate_itinerary_for_selected_destination(
 
     db.commit()
     return require_itinerary(db, context.trip_id)
+
+
+def generate_and_persist_initial_itinerary(
+    db: Session,
+    context: TripContext,
+    provider: ItineraryDraftProvider,
+) -> Itinerary:
+    """Prototype integration boundary; not safe for concurrent production use.
+
+    This pre-check can avoid a provider call after an itinerary already exists, but concurrent
+    callers can still invoke the provider more than once. It also performs a database read before
+    the external call. Do not connect this wrapper to voting until the team defines atomic claims,
+    transaction boundaries, failure recording, and retries with the voting workflow owner.
+    """
+    existing = get_itinerary(db, context.trip_id)
+    if existing is not None:
+        return existing
+    draft = provider.generate(context)
+    return generate_itinerary_for_selected_destination(db, context, draft)
 
 
 def request_revision(
@@ -209,7 +238,7 @@ def request_revision(
 
     revision = ItineraryRevision(
         itinerary_id=itinerary.id,
-        requested_by_member_id=_uuid(current_member_id, "current_member_id"),
+        requested_by_member_id=parse_uuid(current_member_id, "current_member_id"),
         instruction=instruction,
         status="RUNNING",
         base_version=itinerary.version,
@@ -217,11 +246,12 @@ def request_revision(
     itinerary.status = "REVISING"
     db.add(revision)
     try:
+        db.flush()
+        db.expunge(revision)
         db.commit()
     except IntegrityError:
         db.rollback()
         raise ItineraryConflictError("A revision is already running") from None
-    db.refresh(revision)
     return revision
 
 
@@ -232,7 +262,7 @@ def complete_revision(
 ) -> ItineraryRevision:
     revision = db.scalar(
         select(ItineraryRevision)
-        .where(ItineraryRevision.id == _uuid(revision_id, "revision_id"))
+        .where(ItineraryRevision.id == parse_uuid(revision_id, "revision_id"))
         .with_for_update()
     )
     if revision is None:
@@ -255,7 +285,7 @@ def complete_revision(
         db.commit()
         raise ItineraryConflictError("Revision result is stale")
 
-    content_changed = _item_fingerprint(itinerary.items) != _item_fingerprint(
+    content_changed = item_fingerprint(itinerary.items) != item_fingerprint(
         result.items
     ) or Decimal(str(itinerary.estimated_total_cost)).quantize(Decimal("0.01")) != Decimal(
         str(result.estimated_total_cost)
@@ -264,8 +294,8 @@ def complete_revision(
         revision.status = "NO_CHANGE"
         itinerary.status = "DRAFT"
     else:
-        _replace_items(itinerary, result.items)
-        itinerary.estimated_total_cost = _decimal(result.estimated_total_cost)
+        replace_items(itinerary, result.items)
+        itinerary.estimated_total_cost = decimal_value(result.estimated_total_cost)
         itinerary.version += 1
         itinerary.status = "DRAFT"
         db.execute(delete(ItineraryApproval).where(ItineraryApproval.itinerary_id == itinerary.id))
@@ -279,7 +309,7 @@ def complete_revision(
 def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     revision = db.scalar(
         select(ItineraryRevision)
-        .where(ItineraryRevision.id == _uuid(revision_id, "revision_id"))
+        .where(ItineraryRevision.id == parse_uuid(revision_id, "revision_id"))
         .with_for_update()
     )
     if revision is None:
@@ -298,13 +328,78 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     return revision
 
 
+def execute_ai_revision(
+    db: Session,
+    context: TripContext,
+    current_member_id: str,
+    revision_input: RevisionInput,
+    provider: ItineraryRevisionProvider,
+) -> ItineraryRevision:
+    """Run an isolated AI revision without holding a database transaction during the API call.
+
+    This orchestration boundary is intentionally not connected to the HTTP 202 route. A production
+    endpoint needs a team decision about background execution and recovery after process failure.
+    Authorization, active-revision exclusion, versioning, and approval handling remain delegated
+    to the existing deterministic lifecycle functions.
+    """
+    revision = request_revision(db, context, current_member_id, revision_input)
+    revision_id = str(revision.id)
+    try:
+        itinerary = require_itinerary(db, context.trip_id)
+        current_draft = ItineraryDraft(
+            items=[
+                ItineraryItemInput(
+                    day_number=item.day_number,
+                    position=item.position,
+                    title=item.title,
+                    estimated_cost=money_value(item.estimated_cost),
+                )
+                for item in itinerary.items
+            ],
+            estimated_total_cost=money_value(itinerary.estimated_total_cost),
+        )
+        base_version = revision.base_version
+
+        # End the read transaction before the external provider call.
+        db.commit()
+        revised_draft = provider.revise(
+            context,
+            current_draft,
+            base_version,
+            revision_input.instruction,
+        )
+        return complete_revision(db, revision_id, revised_draft)
+    except Exception:
+        cleanup_failed_revision(db, revision_id)
+        raise
+
+
+def cleanup_failed_revision(db: Session, revision_id: str) -> None:
+    """Best-effort cleanup that never masks the exception which triggered it."""
+    try:
+        db.rollback()
+    except Exception:
+        logger.exception("Failed to roll back before cleaning up revision %s", revision_id)
+        return
+    try:
+        fail_revision(db, revision_id)
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            logger.exception(
+                "Failed to roll back after cleanup failure for revision %s", revision_id
+            )
+        logger.exception("Failed to clean up itinerary revision %s", revision_id)
+
+
 def approval_progress(
     db: Session,
     itinerary: Itinerary,
     eligible_member_ids: set[str],
 ) -> ApprovalProgress:
     eligible_member_uuids = {
-        _uuid(member_id, "eligible member_id") for member_id in eligible_member_ids
+        parse_uuid(member_id, "eligible member_id") for member_id in eligible_member_ids
     }
     approved_count = 0
     if eligible_member_uuids:
@@ -356,13 +451,13 @@ def approve_current_version(
     approval = db.scalar(
         select(ItineraryApproval).where(
             ItineraryApproval.itinerary_id == itinerary.id,
-            ItineraryApproval.trip_member_id == _uuid(current_member_id, "current_member_id"),
+            ItineraryApproval.trip_member_id == parse_uuid(current_member_id, "current_member_id"),
         )
     )
     if approval is None:
         approval = ItineraryApproval(
             itinerary_id=itinerary.id,
-            trip_member_id=_uuid(current_member_id, "current_member_id"),
+            trip_member_id=parse_uuid(current_member_id, "current_member_id"),
             version=approval_input.version,
             approved=approval_input.approved,
         )
