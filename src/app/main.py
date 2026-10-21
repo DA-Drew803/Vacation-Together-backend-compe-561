@@ -7,6 +7,7 @@ from sqlmodel import Session
 
 import app.models
 from app.core.database import create_db_and_tables, get_db
+from app.routers.destination import router as destination_router
 from app.routers.itinerary import router as itinerary_router
 from app.routers.member import router as member_router
 from app.routers.user import router as user_router
@@ -32,6 +33,7 @@ app = FastAPI(
 
 
 app.include_router(itinerary_router, prefix="/api")
+app.include_router(destination_router, prefix="/api")
 app.include_router(user_router, prefix="/api")
 app.include_router(member_router, prefix="/api")
 

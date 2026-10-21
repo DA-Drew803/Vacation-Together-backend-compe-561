@@ -114,7 +114,7 @@ GET    /api/trips/{trip_id}/itinerary/approval
 PUT    /api/trips/{trip_id}/itinerary/approval/me
 ```
 
-There is no endpoint for manual destination selection, direct client assignment of `selected_destination_id`, or user-triggered initial itinerary generation.
+There is no standalone endpoint for manual destination selection, direct client assignment of `selected_destination_id`, or user-triggered initial itinerary generation. The voting-close action may include a candidate only when vote count and frozen recommendation score are exactly tied; that candidate must be one of the final tied candidates and the authenticated eligible closer supplies it.
 
 ## Authentication
 
@@ -298,7 +298,7 @@ These decisions affect implementation but do not contradict the architecture.
 
 ### Voting
 
-- Ballot cardinality; vote changes; closing; required participation; result visibility; ties; membership changes; removed-member votes; reopening.
+- Each frozen eligible member has one equally weighted, changeable ballot. Voting cannot close until every frozen member has voted. Any authenticated frozen member may close; OWNER has no extra authority. The highest vote count wins, then the frozen recommendation score. Only a complete tie in both values may be resolved by the authenticated closer selecting one of the final tied candidates. Membership and candidate changes are rejected after voting starts; reopening is not supported.
 
 ### Revisions
 
