@@ -200,6 +200,7 @@ def close_voting(
     db: Session,
     trip_id: str | uuid.UUID,
     closing_member_id: str | uuid.UUID,
+    selected_candidate_id: str | uuid.UUID | None = None,
 ) -> DestinationVotingState:
     trip_uuid = _uuid(trip_id, "trip_id")
     member_uuid = _uuid(closing_member_id, "trip_member_id")
@@ -208,7 +209,11 @@ def close_voting(
         .where(DestinationVotingState.trip_id == trip_uuid)
         .with_for_update()
     )
-    if state is None or state.status != "OPEN":
+    if state is None:
+        raise DestinationVotingConflictError("Voting is not open for this trip")
+    if state.status == "CLOSED":
+        return state
+    if state.status != "OPEN":
         raise DestinationVotingConflictError("Voting is not open for this trip")
     if str(member_uuid) not in state.frozen_member_ids:
         raise DestinationVotingConflictError("Member is not eligible to close voting")
@@ -251,14 +256,32 @@ def close_voting(
         key=lambda candidate: (vote_counts[candidate.id], Decimal(candidate.match_score)),
         reverse=True,
     )
-    top = ranked[0]
-    if len(ranked) > 1 and (vote_counts[top.id], Decimal(top.match_score)) == (
-        vote_counts[ranked[1].id],
-        Decimal(ranked[1].match_score),
-    ):
-        raise DestinationVotingTieError(
-            "Voting is tied on vote count and recommendation score; manual tie-break approval is required"
-        )
+    top_vote_count = vote_counts[ranked[0].id]
+    top_score = Decimal(ranked[0].match_score)
+    final_tied = [
+        candidate
+        for candidate in ranked
+        if vote_counts[candidate.id] == top_vote_count
+        and Decimal(candidate.match_score) == top_score
+    ]
+    if len(final_tied) > 1:
+        if selected_candidate_id is None:
+            raise DestinationVotingTieError(
+                "Voting is tied; a final tied candidate must be selected"
+            )
+        selected_uuid = _uuid(selected_candidate_id, "selected_candidate_id")
+        tied_ids = {candidate.id for candidate in final_tied}
+        if selected_uuid not in tied_ids:
+            raise DestinationVotingTieError(
+                "Selected candidate is not in the final tied candidate set"
+            )
+        top = next(candidate for candidate in final_tied if candidate.id == selected_uuid)
+    else:
+        if selected_candidate_id is not None:
+            raise DestinationVotingConflictError(
+                "Manual selection is allowed only for a complete final tie"
+            )
+        top = final_tied[0]
     state.status = "CLOSED"
     state.selected_candidate_id = top.id
     state.closed_by_member_id = member_uuid

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import get_current_member_id, get_trip_context
 from app.schemas.destination import (
+    CloseVotingRequest,
     DestinationCandidateListResponse,
     VoteBallot,
     VoteBallotUpdateRequest,
@@ -147,10 +148,16 @@ def finish_voting(
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
     current_member_id: Annotated[str, Depends(get_current_member_id)],
+    request: CloseVotingRequest | None = None,
 ) -> dict:
     require_member(context, current_member_id, trip_id)
     try:
-        state = close_voting(db, trip_id, current_member_id)
+        state = close_voting(
+            db,
+            trip_id,
+            current_member_id,
+            request.selected_candidate_id if request is not None else None,
+        )
         return {
             "trip_id": state.trip_id,
             "status": state.status,

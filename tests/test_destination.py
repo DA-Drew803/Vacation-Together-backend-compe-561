@@ -233,6 +233,26 @@ def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> No
     with pytest.raises(DestinationVotingTieError):
         close_voting(db, trip_id, member_one)
 
+    with pytest.raises(DestinationVotingTieError):
+        close_voting(db, trip_id, member_one, uuid.uuid4())
+
+    state = close_voting(db, trip_id, member_one, second.id)
+    assert state.selected_candidate_id == second.id
+    repeated = close_voting(db, trip_id, member_two, first.id)
+    assert repeated.selected_candidate_id == second.id
+
+
+def test_manual_tie_selection_is_rejected_when_winner_is_unique(db: Session) -> None:
+    trip_id = uuid.uuid4()
+    member_one = uuid.uuid4()
+    first = create_candidate(db, trip_id, "Tokyo", 0.9, "match", 950, "USD")
+    second = create_candidate(db, trip_id, "Paris", 0.8, "match", 950, "USD")
+    start_voting(db, trip_id, [member_one])
+    update_ballot(db, trip_id, member_one, [first.id])
+
+    with pytest.raises(DestinationVotingConflictError):
+        close_voting(db, trip_id, member_one, second.id)
+
 
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:

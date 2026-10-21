@@ -78,3 +78,7 @@ class VotingStateResponse(BaseModel):
     trip_id: uuid.UUID
     status: Literal["OPEN", "CLOSED"]
     selected_candidate_id: uuid.UUID | None = None
+
+
+class CloseVotingRequest(BaseModel):
+    selected_candidate_id: uuid.UUID | None = None
