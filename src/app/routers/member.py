@@ -82,9 +82,7 @@ def get_my_availability(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     return AvailabilityRead(
         member_id=member.id,
-        ranges=[
-            DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges
-        ],
+        ranges=[DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges],
     )
 
 
@@ -107,9 +105,7 @@ def update_my_availability(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return AvailabilityRead(
         member_id=member.id,
-        ranges=[
-            DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges
-        ],
+        ranges=[DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges],
     )
 
 
@@ -154,9 +150,7 @@ def get_my_preferences(
     current_membership: CurrentMembershipDep,
 ) -> PreferenceRead:
     try:
-        member, preference = member_service.get_preferences(
-            db, trip_id, current_membership.user_id
-        )
+        member, preference = member_service.get_preferences(db, trip_id, current_membership.user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except member_service.MemberNotFoundError as error:

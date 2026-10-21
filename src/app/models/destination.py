@@ -87,6 +87,7 @@ class DestinationCandidate(Base):
 
     trip_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
+        ForeignKey("trips.id"),
         nullable=False,
         index=True,
     )
@@ -169,12 +170,14 @@ class DestinationVote(Base):
 
     trip_member_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
+        ForeignKey("trip_members.id"),
         nullable=False,
         index=True,
     )
 
     trip_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
+        ForeignKey("trips.id"),
         nullable=False,
         index=True,
     )

@@ -75,23 +75,15 @@ def fetch_weather_snapshot(
     *,
     transport: Transport = default_transport,
 ) -> dict:
-    """Fetch forecast weather, falling back to Open-Meteo historical data.
+    """Fetch forecast weather or return an unavailable marker.
 
-    The transport is injectable so tests never make live external calls. If both
-    endpoints fail, an unavailable marker contains no fabricated values.
+    The transport is injectable so tests never make live external calls.
     """
     forecast_url = "https://api.open-meteo.com/v1/forecast"
-    archive_url = "https://archive-api.open-meteo.com/v1/archive"
     try:
         return snapshot(
             request_daily(forecast_url, latitude, longitude, start_date, end_date, transport),
             "forecast",
         )
     except (KeyError, OSError, TypeError, ValueError):
-        try:
-            return snapshot(
-                request_daily(archive_url, latitude, longitude, start_date, end_date, transport),
-                "historical_average",
-            )
-        except (KeyError, OSError, TypeError, ValueError):
-            return {"data_type": "unavailable", "source": "open-meteo", "days": []}
+        return {"data_type": "unavailable", "source": "open-meteo", "days": []}

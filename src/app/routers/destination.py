@@ -33,6 +33,7 @@ def invalid_response(error: DestinationInvalidError) -> HTTPException:
         detail=str(error),
     )
 
+
 @router.get(
     "/destination_candidates",
     response_model=DestinationCandidateListResponse,
@@ -113,11 +114,7 @@ def begin_voting(
             current_member.user_id,
         )
 
-        eligible_member_ids = [
-            member.id
-            for member, _user in members
-            if member.voting_eligible
-        ]
+        eligible_member_ids = [member.id for member, _user in members if member.voting_eligible]
 
         state = start_voting(
             db,

@@ -229,6 +229,11 @@ def test_voting_freezes_candidates_and_selects_by_votes_then_score(db: Session) 
 
     assert state.status == "CLOSED"
     assert state.selected_candidate_id == second.id
+    trip = db.get(Trip, trip_id)
+    assert trip is not None
+    assert trip.state == "CLOSED"
+    assert trip.voting_started_at is not None
+    assert trip.voting_closed_at is not None
 
 
 def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> None:
@@ -271,6 +276,50 @@ def test_unique_winner_closes_without_manual_selection(db: Session) -> None:
     state = close_voting(db, trip_id, member_one)
     assert state.status == "CLOSED"
     assert state.selected_candidate_id == first.id
+
+
+def test_candidate_creation_enriches_weather_when_dates_are_supplied(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trip_id = uuid.uuid4()
+    destination = Destination(
+        name="Tokyo",
+        latitude=35.68,
+        longitude=139.65,
+    )
+    db.add(destination)
+    db.commit()
+
+    expected_snapshot = {
+        "data_type": "forecast",
+        "source": "open-meteo",
+        "days": [],
+    }
+
+    def fake_fetch_weather_snapshot(*args, **kwargs) -> dict:
+        return expected_snapshot
+
+    monkeypatch.setattr(
+        destination_service,
+        "fetch_weather_snapshot",
+        fake_fetch_weather_snapshot,
+    )
+
+    candidate = create_candidate(
+        db,
+        trip_id,
+        "Tokyo",
+        0.8,
+        "another match",
+        900,
+        "USD",
+        weather_start_date=date(2027, 1, 1),
+        weather_end_date=date(2027, 1, 2),
+    )
+
+    assert candidate.weather_snapshot == expected_snapshot
+    assert candidate.recommendation_data_status == "calculated"
 
 
 @pytest.fixture
@@ -342,6 +391,7 @@ def test_get_my_ballot_returns_empty_ballot(
     assert response.status_code == 200
     assert response.json() == {"selections": []}
 
+
 def test_enrich_candidate_weather_without_coordinates(db: Session) -> None:
     trip_id = uuid.uuid4()
 
@@ -368,6 +418,7 @@ def test_enrich_candidate_weather_without_coordinates(db: Session) -> None:
         "days": [],
     }
     assert enriched.recommendation_data_status == "partial"
+
 
 def test_enrich_candidate_weather_with_coordinates(
     db: Session,
