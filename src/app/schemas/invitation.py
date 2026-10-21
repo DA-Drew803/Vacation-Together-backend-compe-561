@@ -22,7 +22,10 @@ class InvitationResponse(BaseModel):
     trip_id: UUID
     inviter_id: UUID
     invitee_email: str
-    token: str
     status: str
     created_at: datetime
     expires_at: datetime
+
+
+class InvitationCreateResponse(InvitationResponse):
+    token: str

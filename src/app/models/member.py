@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -31,6 +32,10 @@ class TripMember(Base):
             "role IN ('OWNER', 'MEMBER')",
             name="ck_trip_member_role",
         ),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'REMOVED')",
+            name="ck_trip_member_status",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -59,8 +64,20 @@ class TripMember(Base):
         nullable=False,
     )
 
+    status: Mapped[str] = mapped_column(
+        String(32),
+        default="ACTIVE",
+        nullable=False,
+    )
+
+    voting_eligible: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        nullable=False,
+    )
+
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         nullable=False,
     )

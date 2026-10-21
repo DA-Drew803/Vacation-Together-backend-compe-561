@@ -1,17 +1,13 @@
 from uuid import UUID
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.member import TripMember
+from app.repository import member as member_repository
 
 
-def get_trip_member(
-    db: Session,
-    member_id: UUID,
-) -> TripMember | None:
-    statement = select(TripMember).where(TripMember.id == member_id)
-    return db.scalar(statement)
+def get_trip_member(db: Session, member_id: UUID) -> TripMember | None:
+    return member_repository.get_trip_member(db, member_id)
 
 
 def get_trip_member_by_user(
@@ -19,24 +15,11 @@ def get_trip_member_by_user(
     trip_id: UUID,
     user_id: UUID,
 ) -> TripMember | None:
-    statement = select(TripMember).where(
-        TripMember.trip_id == trip_id,
-        TripMember.user_id == user_id,
-    )
-    return db.scalar(statement)
+    return member_repository.get_trip_member_by_user(db, trip_id, user_id)
 
 
-def list_trip_members(
-    db: Session,
-    trip_id: UUID,
-) -> list[TripMember]:
-    statement = (
-        select(TripMember)
-        .where(TripMember.trip_id == trip_id)
-        .order_by(TripMember.joined_at)
-    )
-
-    return list(db.scalars(statement).all())
+def list_trip_members(db: Session, trip_id: UUID) -> list[TripMember]:
+    return member_repository.list_trip_members(db, trip_id)
 
 
 def add_trip_member(
@@ -45,26 +28,12 @@ def add_trip_member(
     user_id: UUID,
     role: str = "MEMBER",
 ) -> TripMember:
-    existing_member = get_trip_member_by_user(
-        db=db,
-        trip_id=trip_id,
-        user_id=user_id,
-    )
-
+    existing_member = member_repository.get_trip_member_by_user(db, trip_id, user_id)
     if existing_member is not None:
         raise ValueError("This user is already a member of the trip")
 
-    member = TripMember(
-        trip_id=trip_id,
-        user_id=user_id,
-        role=role,
-    )
-
-    db.add(member)
-    db.commit()
-    db.refresh(member)
-
-    return member
+    member = member_repository.create_trip_member(db, trip_id, user_id, role)
+    return member_repository.save_trip_member(db, member)
 
 
 def update_trip_member(
@@ -73,16 +42,8 @@ def update_trip_member(
     role: str,
 ) -> TripMember:
     member.role = role
-
-    db.commit()
-    db.refresh(member)
-
-    return member
+    return member_repository.save_trip_member(db, member)
 
 
-def remove_trip_member(
-    db: Session,
-    member: TripMember,
-) -> None:
-    db.delete(member)
-    db.commit()
+def remove_trip_member(db: Session, member: TripMember) -> None:
+    member_repository.delete_trip_member(db, member)

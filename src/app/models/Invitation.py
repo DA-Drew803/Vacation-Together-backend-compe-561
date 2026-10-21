@@ -57,7 +57,7 @@ class Invitation(Base):
         index=True,
     )
 
-    token: Mapped[str] = mapped_column(
+    token_hash: Mapped[str] = mapped_column(
         String(255),
         unique=True,
         nullable=False,

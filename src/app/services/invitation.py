@@ -1,19 +1,26 @@
+import hashlib
 import secrets
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.Invitation import Invitation
+from app.models.member import TripMember
+from app.repository import member as member_repository
+
+
+def hash_invitation_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def get_invitation(
     db: Session,
     invitation_id: UUID,
 ) -> Invitation | None:
-    statement = select(Invitation).where(
-        Invitation.id == invitation_id
-    )
+    statement = select(Invitation).where(Invitation.id == invitation_id)
     return db.scalar(statement)
 
 
@@ -21,9 +28,7 @@ def get_invitation_by_token(
     db: Session,
     token: str,
 ) -> Invitation | None:
-    statement = select(Invitation).where(
-        Invitation.token == token
-    )
+    statement = select(Invitation).where(Invitation.token_hash == hash_invitation_token(token))
     return db.scalar(statement)
 
 
@@ -45,12 +50,13 @@ def create_invitation(
     trip_id: UUID,
     inviter_id: UUID,
     invitee_email: str,
-) -> Invitation:
+) -> tuple[Invitation, str]:
+    raw_token = secrets.token_urlsafe(32)
     invitation = Invitation(
         trip_id=trip_id,
         inviter_id=inviter_id,
         invitee_email=invitee_email,
-        token=secrets.token_urlsafe(32),
+        token_hash=hash_invitation_token(raw_token),
         status="PENDING",
     )
 
@@ -58,7 +64,7 @@ def create_invitation(
     db.commit()
     db.refresh(invitation)
 
-    return invitation
+    return invitation, raw_token
 
 
 def update_invitation_status(
@@ -72,3 +78,52 @@ def update_invitation_status(
     db.refresh(invitation)
 
     return invitation
+
+
+def accept_invitation(
+    db: Session,
+    invitation: Invitation,
+    user_id: UUID,
+    user_email: str,
+) -> TripMember:
+    if invitation.invitee_email.casefold() != user_email.casefold():
+        raise ValueError("This invitation belongs to a different email")
+
+    existing_member = member_repository.get_trip_member_by_user(
+        db,
+        invitation.trip_id,
+        user_id,
+    )
+    if existing_member is not None:
+        if invitation.status == "PENDING":
+            invitation.status = "ACCEPTED"
+            db.commit()
+        return existing_member
+
+    expires_at = invitation.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    if expires_at <= datetime.now(UTC):
+        invitation.status = "EXPIRED"
+        db.commit()
+        raise ValueError("This invitation has expired")
+
+    if invitation.status != "PENDING":
+        raise ValueError("This invitation is no longer available")
+
+    member = member_repository.create_trip_member(
+        db,
+        invitation.trip_id,
+        user_id,
+        "MEMBER",
+    )
+    invitation.status = "ACCEPTED"
+    db.add(member)
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise ValueError("This user is already a member of the trip") from error
+
+    db.refresh(member)
+    return member

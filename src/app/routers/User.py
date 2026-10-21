@@ -7,7 +7,6 @@ from app.core.database import get_db
 from app.schemas.user import UserCreate, UserResponse
 from app.services import user as user_service
 
-
 router = APIRouter(
     prefix="/users",
     tags=["Users"],
@@ -28,7 +27,7 @@ def create_user(
             db=db,
             email=user_data.email,
             display_name=user_data.display_name,
-            password_hash=user_data.password,
+            password=user_data.password,
         )
     except ValueError as error:
         raise HTTPException(
