@@ -108,8 +108,7 @@ def test_member_mappers_and_tables_match_mvp_scope() -> None:
 
     assert "trip_members" in Base.metadata.tables
     assert "member_preferences" in Base.metadata.tables
-    assert "member_availability" not in Base.metadata.tables
-    assert "member_budgets" not in Base.metadata.tables
+    assert {"member_availability", "member_budgets"} <= set(Base.metadata.tables)
 
 
 def test_one_preference_per_member_is_enforced(
@@ -134,6 +133,10 @@ def test_one_preference_per_member_is_enforced(
         ("delete", "/api/trips/{trip}/members/{member}"),
         ("get", "/api/trips/{trip}/preferences/me"),
         ("put", "/api/trips/{trip}/preferences/me"),
+        ("get", "/api/trips/{trip}/availability/me"),
+        ("put", "/api/trips/{trip}/availability/me"),
+        ("get", "/api/trips/{trip}/budget/me"),
+        ("put", "/api/trips/{trip}/budget/me"),
     ],
 )
 def test_member_routes_preserve_authentication_503_boundary(
@@ -147,7 +150,13 @@ def test_member_routes_preserve_authentication_503_boundary(
         response = client.request(
             method,
             path.format(trip=ids["trip"], member=ids["member_member"]),
-            json={"interests": []} if method == "put" else None,
+            json=(
+                {"interests": []}
+                if "preferences" in path
+                else {"ranges": [{"start_date": "2027-01-01", "end_date": "2027-01-02"}]}
+                if "availability" in path
+                else {"max_amount": 100, "currency": "USD"}
+            ) if method == "put" else None,
         )
     finally:
         app.dependency_overrides[get_current_member_id] = override
@@ -178,18 +187,34 @@ def test_membership_authorization_and_private_preferences(
     saved = client.put(
         f"/api/trips/{ids['trip']}/preferences/me",
         headers=member_headers,
-        json={"interests": ["Food", "food"], "free_text": "Private idea"},
+        json={"interests": ["Food", "food"], "private_notes": "Private idea"},
     )
     assert saved.status_code == 200
     assert saved.json()["interests"] == ["food"]
+
+    availability = client.put(
+        f"/api/trips/{ids['trip']}/availability/me",
+        headers=member_headers,
+        json={"ranges": [{"start_date": "2027-06-10", "end_date": "2027-06-17"}]},
+    )
+    assert availability.status_code == 200
+    assert availability.json()["ranges"][0]["start_date"] == "2027-06-10"
+
+    budget = client.put(
+        f"/api/trips/{ids['trip']}/budget/me",
+        headers=member_headers,
+        json={"max_amount": 950, "currency": "usd"},
+    )
+    assert budget.status_code == 200
+    assert budget.json()["currency"] == "USD"
 
     owner_preferences = client.get(f"/api/trips/{ids['trip']}/preferences/me")
     assert owner_preferences.status_code == 404
 
     members = client.get(f"/api/trips/{ids['trip']}/members")
     assert members.status_code == 200
-    assert len(members.json()["items"]) == 2
-    assert "free_text" not in str(members.json())
+    assert len(members.json()) == 2
+    assert "private_notes" not in str(members.json())
     assert "password_hash" not in str(members.json())
 
 
@@ -217,3 +242,18 @@ def test_removal_rejects_cross_trip_target_and_voting_freeze(
         f"/api/trips/{ids['trip']}/members/{ids['member_member']}"
     )
     assert frozen.status_code == 409
+
+    for path, payload in (
+        (
+            "availability/me",
+            {"ranges": [{"start_date": "2027-01-01", "end_date": "2027-01-02"}]},
+        ),
+        ("budget/me", {"max_amount": 100, "currency": "USD"}),
+        ("preferences/me", {"interests": ["food"], "private_notes": "changed"}),
+    ):
+        response = client.put(
+            f"/api/trips/{ids['trip']}/{path}",
+            headers={"X-Test-User-Id": str(ids["owner_user"])},
+            json=payload,
+        )
+        assert response.status_code == 409

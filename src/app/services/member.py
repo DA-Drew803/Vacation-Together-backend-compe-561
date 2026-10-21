@@ -6,12 +6,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.member import MemberPreference, TripMember
+from app.models.member import MemberAvailability, MemberBudget, MemberPreference, TripMember
 from app.models.user import User
 from app.repository import member as member_repository
 
 if TYPE_CHECKING:
-    from app.schemas.member import PreferenceUpdate
+    from app.schemas.member import AvailabilityUpdate, BudgetUpdate, PreferenceUpdate
 
 
 class MemberServiceError(ValueError):
@@ -79,8 +79,84 @@ def remove_member(
     if member.id == requester.id:
         raise MemberConflictError("The trip owner cannot remove themselves")
 
-    member.status = "removed"
+    member.status = "REMOVED"
+    member.voting_eligible = False
     db.commit()
+
+
+def ensure_member_inputs_editable(db: Session, trip_id: UUID) -> None:
+    trip = member_repository.get_trip(db, trip_id)
+    if trip is None:
+        raise MemberNotFoundError("Trip not found")
+    if trip.voting_started_at is not None or member_repository.get_voting_state(db, trip_id):
+        raise MemberConflictError("Member inputs cannot be changed after voting has started")
+
+
+def get_availability(
+    db: Session,
+    trip_id: UUID,
+    current_user_id: UUID,
+) -> tuple[TripMember, list[MemberAvailability]]:
+    member = require_active_member(db, trip_id, current_user_id)
+    return member, member_repository.list_availability(db, member.id)
+
+
+def replace_availability(
+    db: Session,
+    trip_id: UUID,
+    current_user_id: UUID,
+    data: AvailabilityUpdate,
+) -> tuple[TripMember, list[MemberAvailability]]:
+    member = require_active_member(db, trip_id, current_user_id)
+    ensure_member_inputs_editable(db, trip_id)
+    existing_ranges = member_repository.list_availability(db, member.id)
+    member_repository.delete_availability(db, existing_ranges)
+    new_ranges = [
+        MemberAvailability(
+            trip_member_id=member.id,
+            start_date=date_range.start_date,
+            end_date=date_range.end_date,
+        )
+        for date_range in data.ranges
+    ]
+    member_repository.add_availability(db, new_ranges)
+    db.commit()
+    for date_range in new_ranges:
+        db.refresh(date_range)
+    return member, new_ranges
+
+
+def get_budget(
+    db: Session,
+    trip_id: UUID,
+    current_user_id: UUID,
+) -> tuple[TripMember, MemberBudget]:
+    member = require_active_member(db, trip_id, current_user_id)
+    budget = member_repository.get_budget(db, member.id)
+    if budget is None:
+        raise MemberConflictError("Budget has not been provided")
+    return member, budget
+
+
+def set_budget(
+    db: Session,
+    trip_id: UUID,
+    current_user_id: UUID,
+    data: BudgetUpdate,
+) -> tuple[TripMember, MemberBudget]:
+    member = require_active_member(db, trip_id, current_user_id)
+    ensure_member_inputs_editable(db, trip_id)
+    currency = data.currency.strip().upper()
+    budget = member_repository.get_budget(db, member.id)
+    if budget is None:
+        budget = MemberBudget(trip_member_id=member.id, max_amount=data.max_amount, currency=currency)
+    else:
+        budget.max_amount = data.max_amount
+        budget.currency = currency
+    member_repository.save_budget(db, budget)
+    db.commit()
+    db.refresh(budget)
+    return member, budget
 
 
 # Get the current member's preferences.
@@ -104,6 +180,7 @@ def set_preferences(
     data: PreferenceUpdate,
 ) -> tuple[TripMember, MemberPreference]:
     member = require_active_member(db, trip_id, current_user_id)
+    ensure_member_inputs_editable(db, trip_id)
     interests = sorted({item.strip().lower() for item in data.interests if item.strip()})
 
     preference = member_repository.get_preference(db, member.id)
@@ -111,11 +188,11 @@ def set_preferences(
         preference = MemberPreference(
             trip_member_id=member.id,
             interests=interests,
-            free_text=data.free_text,
+            private_notes=data.private_notes,
         )
     else:
         preference.interests = interests
-        preference.free_text = data.free_text
+        preference.private_notes = data.private_notes
 
     member_repository.save_preference(db, preference)
     db.commit()
@@ -160,6 +237,9 @@ def add_trip_member(
     user_id: UUID,
     role: str = "MEMBER",
 ) -> TripMember:
+    if role != "MEMBER":
+        raise ValueError("New members must be assigned the MEMBER role")
+
     existing_member = get_trip_member_by_user(
         db=db,
         trip_id=trip_id,
@@ -187,6 +267,8 @@ def update_trip_member(
     member: TripMember,
     role: str,
 ) -> TripMember:
+    if role not in {"OWNER", "MEMBER"}:
+        raise ValueError("Role must be OWNER or MEMBER")
     member.role = role
 
     db.commit()

@@ -1,11 +1,12 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MemberRole = Literal["OWNER", "MEMBER"]
-MemberStatus = Literal["active", "removed"]
+MemberStatus = Literal["ACTIVE", "REMOVED"]
 
 
 class TripMemberCreate(BaseModel):
@@ -27,36 +28,54 @@ class TripMemberResponse(BaseModel):
     joined_at: datetime
 
 
+class DateRange(BaseModel):
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def validate_date_order(self) -> "DateRange":
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must be on or before the end date")
+        return self
+
+
+class AvailabilityUpdate(BaseModel):
+    ranges: list[DateRange] = Field(min_length=1)
+
+
+class AvailabilityRead(BaseModel):
+    member_id: UUID
+    ranges: list[DateRange]
+
+
+class BudgetUpdate(BaseModel):
+    max_amount: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
+    currency: str = Field(min_length=3, max_length=3)
+
+
+class BudgetRead(BaseModel):
+    member_id: UUID
+    max_amount: Decimal
+    currency: str
+
+
 class MemberRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    user: "MemberUserRead"
+    user_id: UUID
+    display_name: str
     role: MemberRole
     status: MemberStatus
-    joined_at: datetime
-
-
-class MemberUserRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: UUID
-    email: str
-    display_name: str
-    created_at: datetime
-
-
-class TripMemberListResponse(BaseModel):
-    items: list[MemberRead]
+    voting_eligible: bool
 
 
 class PreferenceUpdate(BaseModel):
-    interests: list[str] = Field(max_length=50)
-    free_text: str | None = Field(default=None, max_length=4000)
+    interests: list[str] = Field(default_factory=list, max_length=50)
+    private_notes: str | None = Field(default=None, max_length=2000)
 
 
 class PreferenceRead(BaseModel):
-    trip_member_id: UUID
+    member_id: UUID
     interests: list[str]
-    free_text: str | None
-    updated_at: datetime
+    private_notes: str | None

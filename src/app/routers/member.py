@@ -7,10 +7,14 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.dependencies import get_current_member_id
 from app.schemas.member import (
+    AvailabilityRead,
+    AvailabilityUpdate,
+    BudgetRead,
+    BudgetUpdate,
+    DateRange,
     MemberRead,
     PreferenceRead,
     PreferenceUpdate,
-    TripMemberListResponse,
 )
 from app.services import member as member_service
 
@@ -21,39 +25,38 @@ CurrentUserIdDep = Annotated[UUID, Depends(get_current_member_id)]
 
 
 # Return the active members for a trip.
-@router.get("/members", response_model=TripMemberListResponse)
+@router.get("/members", response_model=list[MemberRead])
 def get_members(
     trip_id: UUID,
     db: SessionDep,
     current_user_id: CurrentUserIdDep,
-) -> TripMemberListResponse:
+) -> list[MemberRead]:
     try:
         rows = member_service.list_members(db, trip_id, current_user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
-    return TripMemberListResponse(
-        items=[
-            MemberRead(
-                id=member.id,
-                user=user,
-                role=member.role,
-                status=member.status,
-                joined_at=member.joined_at,
-            )
-            for member, user in rows
-        ]
-    )
+    return [
+        MemberRead(
+            id=member.id,
+            user_id=member.user_id,
+            display_name=user.display_name,
+            role=member.role,
+            status=member.status,
+            voting_eligible=member.voting_eligible,
+        )
+        for member, user in rows
+    ]
 
 
 # Remove a member from a trip.
-@router.delete("/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/members/{member_id}")
 def remove_member(
     trip_id: UUID,
     member_id: UUID,
     db: SessionDep,
     current_user_id: CurrentUserIdDep,
-) -> None:
+) -> dict[str, str]:
     try:
         member_service.remove_member(db, trip_id, member_id, current_user_id)
     except member_service.MemberForbiddenError as error:
@@ -62,6 +65,83 @@ def remove_member(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     except member_service.MemberConflictError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return {"detail": "Member removed"}
+
+
+@router.get("/availability/me", response_model=AvailabilityRead)
+def get_my_availability(
+    trip_id: UUID,
+    db: SessionDep,
+    current_user_id: CurrentUserIdDep,
+) -> AvailabilityRead:
+    try:
+        member, ranges = member_service.get_availability(db, trip_id, current_user_id)
+    except member_service.MemberForbiddenError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    return AvailabilityRead(
+        member_id=member.id,
+        ranges=[
+            DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges
+        ],
+    )
+
+
+@router.put("/availability/me", response_model=AvailabilityRead)
+def update_my_availability(
+    trip_id: UUID,
+    data: AvailabilityUpdate,
+    db: SessionDep,
+    current_user_id: CurrentUserIdDep,
+) -> AvailabilityRead:
+    try:
+        member, ranges = member_service.replace_availability(
+            db, trip_id, current_user_id, data
+        )
+    except member_service.MemberForbiddenError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except member_service.MemberNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except member_service.MemberConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return AvailabilityRead(
+        member_id=member.id,
+        ranges=[
+            DateRange(start_date=item.start_date, end_date=item.end_date) for item in ranges
+        ],
+    )
+
+
+@router.get("/budget/me", response_model=BudgetRead)
+def get_my_budget(
+    trip_id: UUID,
+    db: SessionDep,
+    current_user_id: CurrentUserIdDep,
+) -> BudgetRead:
+    try:
+        member, budget = member_service.get_budget(db, trip_id, current_user_id)
+    except member_service.MemberForbiddenError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except member_service.MemberConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return BudgetRead(member_id=member.id, max_amount=budget.max_amount, currency=budget.currency)
+
+
+@router.put("/budget/me", response_model=BudgetRead)
+def update_my_budget(
+    trip_id: UUID,
+    data: BudgetUpdate,
+    db: SessionDep,
+    current_user_id: CurrentUserIdDep,
+) -> BudgetRead:
+    try:
+        member, budget = member_service.set_budget(db, trip_id, current_user_id, data)
+    except member_service.MemberForbiddenError as error:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except member_service.MemberNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except member_service.MemberConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return BudgetRead(member_id=member.id, max_amount=budget.max_amount, currency=budget.currency)
 
 
 # Return the current member's preferences.
@@ -78,10 +158,9 @@ def get_my_preferences(
     except member_service.MemberNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
     return PreferenceRead(
-        trip_member_id=member.id,
+        member_id=member.id,
         interests=preference.interests,
-        free_text=preference.free_text,
-        updated_at=preference.updated_at,
+        private_notes=preference.private_notes,
     )
 
 
@@ -102,9 +181,12 @@ def update_my_preferences(
         )
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
+    except member_service.MemberNotFoundError as error:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    except member_service.MemberConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return PreferenceRead(
-        trip_member_id=member.id,
+        member_id=member.id,
         interests=preference.interests,
-        free_text=preference.free_text,
-        updated_at=preference.updated_at,
+        private_notes=preference.private_notes,
     )
