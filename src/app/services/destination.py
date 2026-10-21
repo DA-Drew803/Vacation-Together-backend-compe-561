@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, select
@@ -12,6 +12,7 @@ from app.models.destination import (
     DestinationVotingState,
 )
 from app.models.trip import Trip
+from app.services.weather import fetch_weather_snapshot
 
 
 class DestinationInvalidError(ValueError):
@@ -309,6 +310,39 @@ def get_destination_by_name(
     statement = select(Destination).where(Destination.name == name)
 
     return db.scalar(statement)
+
+def enrich_candidate_weather(
+    db: Session,
+    candidate: DestinationCandidate,
+    start_date: date,
+    end_date: date,
+) -> DestinationCandidate:
+    destination = candidate.destination
+
+    if destination.latitude is None or destination.longitude is None:
+        candidate.weather_snapshot = {
+            "data_type": "unavailable",
+            "source": "open-meteo",
+            "days": [],
+        }
+        candidate.recommendation_data_status = "partial"
+    else:
+        candidate.weather_snapshot = fetch_weather_snapshot(
+            float(destination.latitude),
+            float(destination.longitude),
+            start_date,
+            end_date,
+        )
+
+        if candidate.weather_snapshot["data_type"] == "unavailable":
+            candidate.recommendation_data_status = "partial"
+        else:
+            candidate.recommendation_data_status = "calculated"
+
+    db.commit()
+    db.refresh(candidate)
+
+    return candidate
 
 
 def create_candidate(

@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_member_id, get_trip_context
+from app.core.dependencies import get_current_trip_member
+from app.models.member import TripMember
 from app.schemas.destination import (
     CloseVotingRequest,
     DestinationCandidateListResponse,
@@ -12,8 +13,8 @@ from app.schemas.destination import (
     VoteBallotUpdateRequest,
     VotingStateResponse,
 )
-from app.schemas.itinerary import TripContext
 from app.services import destination as destination_service
+from app.services import member as member_service
 from app.services.destination import (
     DestinationInvalidError,
     close_voting,
@@ -32,14 +33,6 @@ def invalid_response(error: DestinationInvalidError) -> HTTPException:
         detail=str(error),
     )
 
-
-def require_member(context: TripContext, member_id: str, trip_id: str) -> None:
-    if context.trip_id != trip_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-    if member_id not in {member.member_id for member in context.eligible_members}:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
-
-
 @router.get(
     "/destination_candidates",
     response_model=DestinationCandidateListResponse,
@@ -47,11 +40,9 @@ def require_member(context: TripContext, member_id: str, trip_id: str) -> None:
 def read_destination_candidates(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
-    context: Annotated[TripContext, Depends(get_trip_context)],
-    current_member_id: Annotated[str, Depends(get_current_member_id)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
 ) -> dict:
     try:
-        require_member(context, current_member_id, trip_id)
         candidates = destination_service.get_candidates_for_trip(
             db,
             trip_id,
@@ -70,18 +61,13 @@ def read_destination_candidates(
 def read_my_ballot(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
-    current_member_id: Annotated[
-        str,
-        Depends(get_current_member_id),
-    ],
-    context: Annotated[TripContext, Depends(get_trip_context)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
 ) -> dict:
     try:
-        require_member(context, current_member_id, trip_id)
         votes = destination_service.get_votes_for_member(
             db,
             trip_id,
-            current_member_id,
+            current_member.id,
         )
 
         return destination_service.serialize_ballot(votes)
@@ -98,18 +84,13 @@ def update_my_ballot(
     trip_id: Annotated[str, Path()],
     ballot: VoteBallotUpdateRequest,
     db: Annotated[Session, Depends(get_db)],
-    current_member_id: Annotated[
-        str,
-        Depends(get_current_member_id),
-    ],
-    context: Annotated[TripContext, Depends(get_trip_context)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
 ) -> dict:
     try:
-        require_member(context, current_member_id, trip_id)
         votes = destination_service.update_ballot(
             db,
             trip_id,
-            current_member_id,
+            current_member.id,
             [selection.destination_candidate_id for selection in ballot.selections],
         )
 
@@ -123,21 +104,33 @@ def update_my_ballot(
 def begin_voting(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
-    context: Annotated[TripContext, Depends(get_trip_context)],
-    current_member_id: Annotated[str, Depends(get_current_member_id)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
 ) -> dict:
-    require_member(context, current_member_id, trip_id)
     try:
+        members = member_service.list_members(
+            db,
+            current_member.trip_id,
+            current_member.user_id,
+        )
+
+        eligible_member_ids = [
+            member.id
+            for member, _user in members
+            if member.voting_eligible
+        ]
+
         state = start_voting(
             db,
             trip_id,
-            [member.member_id for member in context.eligible_members],
+            eligible_member_ids,
         )
+
         return {
             "trip_id": state.trip_id,
             "status": state.status,
             "selected_candidate_id": state.selected_candidate_id,
         }
+
     except DestinationInvalidError as error:
         raise invalid_response(error) from error
 
@@ -146,16 +139,14 @@ def begin_voting(
 def finish_voting(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
-    context: Annotated[TripContext, Depends(get_trip_context)],
-    current_member_id: Annotated[str, Depends(get_current_member_id)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
     request: CloseVotingRequest | None = None,
 ) -> dict:
-    require_member(context, current_member_id, trip_id)
     try:
         state = close_voting(
             db,
             trip_id,
-            current_member_id,
+            current_member.id,
             request.selected_candidate_id if request is not None else None,
         )
         return {

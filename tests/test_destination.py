@@ -1,5 +1,6 @@
 import uuid
 from collections.abc import Generator
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,17 +9,19 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
-from app.core.dependencies import get_current_member_id, get_trip_context
+from app.core.dependencies import get_current_trip_member
 from app.main import app
 from app.models.destination import Destination, DestinationVotingState
+from app.models.member import TripMember
 from app.models.trip import Trip
-from app.schemas.itinerary import Budget, EligibleMember, TripContext
+from app.services import destination as destination_service
 from app.services.destination import (
     DestinationInvalidError,
     DestinationVotingConflictError,
     DestinationVotingTieError,
     close_voting,
     create_candidate,
+    enrich_candidate_weather,
     get_candidates_for_trip,
     get_destination_by_name,
     start_voting,
@@ -286,28 +289,21 @@ def client() -> Generator[TestClient, None, None]:
 
     app.dependency_overrides[get_db] = override_get_db
 
-    async def override_current_member() -> str:
-        return str(uuid.uuid4())
-
-    app.dependency_overrides[get_current_member_id] = override_current_member
     member_id = uuid.uuid4()
 
-    async def override_trip_context(trip_id: str) -> TripContext:
-        return TripContext(
-            trip_id=trip_id,
-            selected_destination_id=str(uuid.uuid4()),
-            destination_name="Tokyo",
-            start_date="2027-01-01",
-            end_date="2027-01-02",
-            budget=Budget(max_amount=1000),
-            eligible_members=[EligibleMember(member_id=str(member_id), display_name="Member")],
+    member_trip_id = uuid.uuid4()
+    member_user_id = uuid.uuid4()
+
+    def override_current_trip_member() -> TripMember:
+        return TripMember(
+            id=member_id,
+            trip_id=member_trip_id,
+            user_id=member_user_id,
+            role="MEMBER",
+            status="ACTIVE",
         )
 
-    async def override_current_member_stable() -> str:
-        return str(member_id)
-
-    app.dependency_overrides[get_current_member_id] = override_current_member_stable
-    app.dependency_overrides[get_trip_context] = override_trip_context
+    app.dependency_overrides[get_current_trip_member] = override_current_trip_member
 
     with TestClient(app) as test_client:
         yield test_client
@@ -345,3 +341,93 @@ def test_get_my_ballot_returns_empty_ballot(
 
     assert response.status_code == 200
     assert response.json() == {"selections": []}
+
+def test_enrich_candidate_weather_without_coordinates(db: Session) -> None:
+    trip_id = uuid.uuid4()
+
+    candidate = create_candidate(
+        db=db,
+        trip_id=trip_id,
+        destination_name="Tokyo",
+        match_score=0.91,
+        match_explanation="Good match",
+        estimated_cost_per_person=950,
+        currency="USD",
+    )
+
+    enriched = enrich_candidate_weather(
+        db,
+        candidate,
+        date(2027, 1, 1),
+        date(2027, 1, 2),
+    )
+
+    assert enriched.weather_snapshot == {
+        "data_type": "unavailable",
+        "source": "open-meteo",
+        "days": [],
+    }
+    assert enriched.recommendation_data_status == "partial"
+
+def test_enrich_candidate_weather_with_coordinates(
+    db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trip_id = uuid.uuid4()
+
+    candidate = create_candidate(
+        db=db,
+        trip_id=trip_id,
+        destination_name="Tokyo",
+        match_score=0.91,
+        match_explanation="Good match",
+        estimated_cost_per_person=950,
+        currency="USD",
+    )
+
+    candidate.destination.latitude = 35.68
+    candidate.destination.longitude = 139.65
+    db.commit()
+
+    expected_snapshot = {
+        "data_type": "forecast",
+        "source": "open-meteo",
+        "days": [
+            {
+                "date": "2027-01-01",
+                "temperature_high": 12,
+                "temperature_low": 4,
+                "precipitation_probability": 20,
+                "weather_code": 1,
+            }
+        ],
+    }
+
+    def fake_fetch_weather_snapshot(
+        latitude: float,
+        longitude: float,
+        start_date: date,
+        end_date: date,
+    ) -> dict:
+        assert latitude == 35.68
+        assert longitude == 139.65
+        assert start_date == date(2027, 1, 1)
+        assert end_date == date(2027, 1, 2)
+
+        return expected_snapshot
+
+    monkeypatch.setattr(
+        destination_service,
+        "fetch_weather_snapshot",
+        fake_fetch_weather_snapshot,
+    )
+
+    enriched = enrich_candidate_weather(
+        db,
+        candidate,
+        date(2027, 1, 1),
+        date(2027, 1, 2),
+    )
+
+    assert enriched.weather_snapshot == expected_snapshot
+    assert enriched.recommendation_data_status == "calculated"
