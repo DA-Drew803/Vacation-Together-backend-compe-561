@@ -3,8 +3,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.member import MemberAvailability, MemberBudget, MemberPreference
-from app.models.trip import Trip, TripMember
+from app.models.member import MemberAvailability, MemberBudget, MemberPreference, TripMember
+from app.models.trip import Trip
 from app.models.user import User
 
 

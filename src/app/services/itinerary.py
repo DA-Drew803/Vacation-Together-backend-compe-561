@@ -387,7 +387,9 @@ def _cleanup_failed_revision(db: Session, revision_id: str) -> None:
         try:
             db.rollback()
         except Exception:
-            logger.exception("Failed to roll back after cleanup failure for revision %s", revision_id)
+            logger.exception(
+                "Failed to roll back after cleanup failure for revision %s", revision_id
+            )
         logger.exception("Failed to clean up itinerary revision %s", revision_id)
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -9,10 +9,12 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -21,6 +23,54 @@ from app.core.database import Base
 
 if TYPE_CHECKING:
     from app.models.trip import TripMember
+
+
+class TripMember(Base):
+    __tablename__ = "trip_members"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trip_id",
+            "user_id",
+            name="uq_trip_member_trip_user",
+        ),
+        CheckConstraint(
+            "role IN ('OWNER', 'MEMBER')",
+            name="ck_trip_member_role",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(
+        Uuid,
+        primary_key=True,
+        default=uuid4,
+    )
+
+    trip_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("trips.id"),
+        nullable=False,
+        index=True,
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        Uuid,
+        ForeignKey("users.id"),
+        nullable=False,
+        index=True,
+    )
+
+    role: Mapped[str] = mapped_column(
+        String(32),
+        default="MEMBER",
+        nullable=False,
+    )
+
+    joined_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
 
 class MemberAvailability(Base):
@@ -46,9 +96,7 @@ class MemberAvailability(Base):
 
 class MemberBudget(Base):
     __tablename__ = "member_budgets"
-    __table_args__ = (
-        CheckConstraint("max_amount > 0", name="ck_member_budget_positive"),
-    )
+    __table_args__ = (CheckConstraint("max_amount > 0", name="ck_member_budget_positive"),)
 
     trip_member_id: Mapped[UUID] = mapped_column(
         ForeignKey("trip_members.id"),

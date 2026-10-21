@@ -1,10 +1,14 @@
+from datetime import date
+from math import isfinite
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class Budget(BaseModel):
+    """The limiting per-person budget supplied by deterministic group matching."""
+
     max_amount: float = Field(gt=0)
     currency: str = "USD"
 
@@ -63,6 +67,55 @@ class EligibleMember(BaseModel):
     voting_eligible: bool = True
 
 
+class WeatherDay(BaseModel):
+    date: date
+    condition: str
+    temperature_high: float | None = None
+    temperature_low: float | None = None
+    precipitation_probability: int | None = Field(default=None, ge=0, le=100)
+
+    @field_validator("condition")
+    @classmethod
+    def validate_condition(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("Weather condition must not be blank")
+        return normalized
+
+    @field_validator("temperature_high", "temperature_low")
+    @classmethod
+    def validate_temperature(cls, value: float | None) -> float | None:
+        if value is not None and not isfinite(value):
+            raise ValueError("Weather temperatures must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_temperature_range(self) -> "WeatherDay":
+        if (
+            self.temperature_low is not None
+            and self.temperature_high is not None
+            and self.temperature_low > self.temperature_high
+        ):
+            raise ValueError("Weather low temperature must not exceed high temperature")
+        return self
+
+
+class FoodPreferences(BaseModel):
+    cuisines: list[str] = Field(default_factory=list)
+    dining_style: str | None = None
+    dietary_preferences: list[str] = Field(default_factory=list)
+
+
+class ItineraryItemMetadata(BaseModel):
+    """Provider-side semantic metadata; intentionally not persisted by the DB models."""
+
+    category: str
+    tags: list[str] = Field(default_factory=list)
+    environment: str = "UNKNOWN"
+    mobility: str = "UNKNOWN"
+    intensity: str = "UNKNOWN"
+
+
 class TripContext(BaseModel):
     trip_id: str
     selected_destination_id: str
@@ -72,6 +125,19 @@ class TripContext(BaseModel):
     budget: Budget
     eligible_members: list[EligibleMember]
     interests: list[str] = Field(default_factory=list)
+    food_preferences: FoodPreferences | None = None
+    travel_preferences: list[str] = Field(default_factory=list)
+    pace: str | None = None
+    mobility_preference: str | None = None
+    weather: list[WeatherDay] | None = None
+
+    @model_validator(mode="after")
+    def reject_duplicate_weather_dates(self) -> "TripContext":
+        if self.weather is not None:
+            dates = [weather_day.date for weather_day in self.weather]
+            if len(dates) != len(set(dates)):
+                raise ValueError("Weather dates must be unique")
+        return self
 
 
 class ItineraryItemInput(BaseModel):
@@ -79,6 +145,7 @@ class ItineraryItemInput(BaseModel):
     position: int = Field(ge=1)
     title: str = Field(min_length=1)
     estimated_cost: float = Field(ge=0)
+    metadata: ItineraryItemMetadata | None = None
 
 
 class ItineraryDraft(BaseModel):

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user
+from app.core.dependencies import get_current_member_id
 from app.models.user import User
 from app.schemas.member import (
     AvailabilityRead,
@@ -15,13 +15,39 @@ from app.schemas.member import (
     MemberRead,
     PreferenceRead,
     PreferenceUpdate,
+    TripMemberCreate,
+    TripMemberResponse,
 )
 from app.services import member as member_service
 
 router = APIRouter(prefix="/trips/{trip_id}", tags=["members"])
 
 SessionDep = Annotated[Session, Depends(get_db)]
-CurrentUserDep = Annotated[User, Depends(get_current_user)]
+CurrentUserDep = Annotated[User, Depends(get_current_member_id)]
+
+
+# Add an existing user to a trip.
+@router.post(
+    "/members",
+    response_model=TripMemberResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_user_to_trip(
+    trip_id: UUID,
+    data: TripMemberCreate,
+    db: SessionDep,
+) -> TripMemberResponse:
+    try:
+        member = member_service.add_trip_member(
+            db=db,
+            trip_id=trip_id,
+            user_id=data.user_id,
+            role=data.role,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+    return TripMemberResponse.model_validate(member)
 
 
 # Return the active members for a trip.

@@ -43,5 +43,11 @@ line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/app/models/Invitation.py" = ["N999"]
+"src/app/models/User.py" = ["N999"]
+"src/app/routers/Invitation.py" = ["N999"]
+"src/app/routers/User.py" = ["N999"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/app"]
