@@ -14,12 +14,12 @@ class WeatherProviderError(RuntimeError):
 Transport = Callable[[Request], bytes]
 
 
-def _default_transport(request: Request) -> bytes:
+def default_transport(request: Request) -> bytes:
     with urlopen(request, timeout=10) as response:
         return response.read()
 
 
-def _request_daily(
+def request_daily(
     base_url: str,
     latitude: float,
     longitude: float,
@@ -44,7 +44,7 @@ def _request_daily(
     return payload
 
 
-def _snapshot(payload: dict, data_type: str) -> dict:
+def snapshot(payload: dict, data_type: str) -> dict:
     daily = payload["daily"]
     times = daily.get("time", [])
     highs = daily.get("temperature_2m_max", [])
@@ -73,7 +73,7 @@ def fetch_weather_snapshot(
     start_date: date,
     end_date: date,
     *,
-    transport: Transport = _default_transport,
+    transport: Transport = default_transport,
 ) -> dict:
     """Fetch forecast weather, falling back to Open-Meteo historical data.
 
@@ -83,14 +83,14 @@ def fetch_weather_snapshot(
     forecast_url = "https://api.open-meteo.com/v1/forecast"
     archive_url = "https://archive-api.open-meteo.com/v1/archive"
     try:
-        return _snapshot(
-            _request_daily(forecast_url, latitude, longitude, start_date, end_date, transport),
+        return snapshot(
+            request_daily(forecast_url, latitude, longitude, start_date, end_date, transport),
             "forecast",
         )
     except (KeyError, OSError, TypeError, ValueError):
         try:
-            return _snapshot(
-                _request_daily(archive_url, latitude, longitude, start_date, end_date, transport),
+            return snapshot(
+                request_daily(archive_url, latitude, longitude, start_date, end_date, transport),
                 "historical_average",
             )
         except (KeyError, OSError, TypeError, ValueError):
