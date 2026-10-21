@@ -7,12 +7,7 @@ from app.models.destination import (
 )
 from app.models.invitation import Invitation
 from app.models.itinerary import Itinerary, ItineraryApproval, ItineraryItem, ItineraryRevision
-from app.models.member import (
-    MemberAvailability,
-    MemberBudget,
-    MemberPreference,
-    TripMember,
-)
+from app.models.member import MemberPreference, TripMember
 from app.models.trip import Trip
 from app.models.user import User
 
@@ -27,8 +22,6 @@ __all__ = [
     "ItineraryApproval",
     "ItineraryItem",
     "ItineraryRevision",
-    "MemberAvailability",
-    "MemberBudget",
     "MemberPreference",
     "Trip",
     "TripMember",
