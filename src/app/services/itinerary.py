@@ -8,8 +8,9 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, selectinload, sessionmaker
 
+from app.core.database import SessionLocal
 from app.models.destination import Destination, DestinationCandidate
 from app.models.itinerary import (
     Itinerary,
@@ -401,15 +402,26 @@ def execute_ai_revision(
     revision_input: RevisionInput,
     provider: ItineraryRevisionProvider,
 ) -> ItineraryRevision:
-    """Run an isolated AI revision without holding a database transaction during the API call.
-
-    This orchestration boundary is intentionally not connected to the HTTP 202 route. A production
-    endpoint needs a team decision about background execution and recovery after process failure.
-    Authorization, active-revision exclusion, versioning, and approval handling remain delegated
-    to the existing deterministic lifecycle functions.
-    """
     revision = request_revision(db, context, current_member_id, revision_input)
-    revision_id = str(revision.id)
+    return execute_claimed_ai_revision(db, context, str(revision.id), provider)
+
+
+def execute_claimed_ai_revision(
+    db: Session,
+    context: TripContext,
+    revision_id: str,
+    provider: ItineraryRevisionProvider,
+) -> ItineraryRevision:
+    """Run a committed revision claim without holding a DB transaction during the provider call."""
+    revision = db.scalar(
+        select(ItineraryRevision).where(
+            ItineraryRevision.id == parse_uuid(revision_id, "revision_id"),
+            ItineraryRevision.status == "RUNNING",
+        )
+    )
+    if revision is None:
+        raise ItineraryConflictError("Revision is no longer active")
+
     try:
         itinerary = require_itinerary(db, context.trip_id)
         current_draft = ItineraryDraft(
@@ -425,6 +437,7 @@ def execute_ai_revision(
             estimated_total_cost=money_value(itinerary.estimated_total_cost),
         )
         base_version = revision.base_version
+        instruction = revision.instruction
 
         # End the read transaction before the external provider call.
         db.commit()
@@ -432,7 +445,7 @@ def execute_ai_revision(
             context,
             current_draft,
             base_version,
-            revision_input.instruction,
+            instruction,
         )
         return complete_revision(db, revision_id, revised_draft)
     except Exception:
@@ -457,6 +470,35 @@ def cleanup_failed_revision(db: Session, revision_id: str) -> None:
                 "Failed to roll back after cleanup failure for revision %s", revision_id
             )
         logger.exception("Failed to clean up itinerary revision %s", revision_id)
+
+
+def run_revision_background(
+    revision_id: str,
+    trip_id: str,
+    provider: ItineraryRevisionProvider | None,
+    session_factory: sessionmaker[Session] | None = None,
+) -> None:
+    """Execute a committed revision claim using a fresh background-task session."""
+    factory = session_factory or SessionLocal
+    with factory() as db:
+        try:
+            revision = db.scalar(
+                select(ItineraryRevision).where(
+                    ItineraryRevision.id == parse_uuid(revision_id, "revision_id")
+                )
+            )
+            if revision is None or revision.status != "RUNNING":
+                return
+
+            if provider is None:
+                cleanup_failed_revision(db, revision_id)
+                return
+
+            context = build_trip_context(db, trip_id)
+            execute_claimed_ai_revision(db, context, revision_id, provider)
+        except Exception:
+            logger.exception("Background itinerary revision failed: %s", revision_id)
+            cleanup_failed_revision(db, revision_id)
 
 
 def approval_progress(

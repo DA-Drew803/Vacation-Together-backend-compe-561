@@ -1,10 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, status
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_member_id, get_itinerary_provider, get_trip_context
+from app.core.dependencies import (
+    get_current_member_id,
+    get_itinerary_provider,
+    get_trip_context,
+)
 from app.schemas.itinerary import (
     Approval,
     ApprovalInput,
@@ -17,7 +21,7 @@ from app.schemas.itinerary import (
 )
 from app.services import itinerary as itinerary_service
 from app.services.itinerary import ItineraryConflictError, ItineraryInvalidError
-from app.services.openai_itinerary import ItineraryProviderError, OpenAIItineraryProvider
+from app.services.openai_itinerary import OpenAIItineraryProvider
 
 PHASE_5_ERROR_RESPONSES = {
     status.HTTP_400_BAD_REQUEST: {"model": Error, "description": "Invalid request"},
@@ -70,6 +74,7 @@ def read_itinerary(
 def create_revision(
     trip_id: Annotated[str, Path()],
     revision_input: RevisionInput,
+    background_tasks: BackgroundTasks,
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
     current_member_id: Annotated[str, Depends(get_current_member_id)],
@@ -77,21 +82,21 @@ def create_revision(
 ) -> dict:
     try:
         effective_context = context.model_copy(update={"trip_id": trip_id})
-        if provider is None:
-            revision = itinerary_service.request_revision(
-                db, effective_context, current_member_id, revision_input
-            )
-        else:
-            revision = itinerary_service.execute_ai_revision(
-                db, effective_context, current_member_id, revision_input, provider
-            )
+        revision = itinerary_service.request_revision(
+            db, effective_context, current_member_id, revision_input
+        )
+        background_tasks.add_task(
+            itinerary_service.run_revision_background,
+            str(revision.id),
+            trip_id,
+            provider,
+            sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=True),
+        )
         return itinerary_service.serialize_revision(revision)
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
     except ItineraryInvalidError as error:
         raise invalid_response(error) from error
-    except ItineraryProviderError as error:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
 
 
 @router.get("/itinerary/approval", response_model=ApprovalProgress)

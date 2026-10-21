@@ -199,7 +199,7 @@ def test_complete_nine_stage_mvp_workflow(mvp_client: TestClient) -> None:
         json={"instruction": "Make day 1 cheaper"},
     )
     assert revised.status_code == 202, revised.text
-    assert revised.json()["status"] == "SUCCEEDED"
+    assert revised.json()["status"] == "RUNNING"
     current = mvp_client.get(
         f"/api/trips/{trip_id}/itinerary", headers=auth_header(owner_token)
     ).json()

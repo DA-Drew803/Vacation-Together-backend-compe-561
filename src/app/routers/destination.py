@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Annotated
 
@@ -20,10 +21,11 @@ from app.services import itinerary as itinerary_service
 from app.services import member as member_service
 from app.services.destination import (
     DestinationInvalidError,
-    close_voting,
     start_voting,
 )
-from app.services.openai_itinerary import ItineraryProviderError, OpenAIItineraryProvider
+from app.services.openai_itinerary import OpenAIItineraryProvider
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/trips/{trip_id}",
@@ -173,15 +175,12 @@ def finish_voting(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
     current_member: Annotated[TripMember, Depends(get_current_trip_member)],
+    provider: Annotated[OpenAIItineraryProvider | None, Depends(get_itinerary_provider)],
     request: CloseVotingRequest | None = None,
 ) -> dict:
     try:
-        state = close_voting(
-            db,
-            trip_id,
-            current_member.id,
-            request.selected_candidate_id if request is not None else None,
-        )
+        del request
+        state = _close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
         return {
             "trip_id": state.trip_id,
             "status": state.status,
@@ -199,16 +198,27 @@ def close_votes(
     provider: Annotated[OpenAIItineraryProvider | None, Depends(get_itinerary_provider)],
 ) -> dict:
     try:
-        if provider is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="OpenAI itinerary generation is not configured",
-            )
-        destination_service.close_voting(db, trip_id, current_member.id)
-        context = itinerary_service.build_trip_context(db, trip_id)
-        itinerary_service.generate_and_persist_initial_itinerary(db, context, provider)
+        _close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
         return destination_service.get_voting_progress(db, trip_id)
     except DestinationInvalidError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
-    except ItineraryProviderError as error:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
+
+
+def _close_voting_and_trigger_itinerary(
+    db: Session,
+    trip_id: uuid.UUID,
+    member_id: uuid.UUID,
+    provider: OpenAIItineraryProvider | None,
+):
+    """Commit voting before best-effort initial itinerary generation."""
+    state = destination_service.close_voting(db, trip_id, member_id)
+    if provider is None:
+        return state
+
+    try:
+        context = itinerary_service.build_trip_context(db, trip_id)
+        itinerary_service.generate_and_persist_initial_itinerary(db, context, provider)
+    except Exception:
+        db.rollback()
+        logger.exception("Initial itinerary generation failed after voting closed: %s", trip_id)
+    return state

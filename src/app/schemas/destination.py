@@ -17,8 +17,6 @@ class EstimatedCost(BaseModel):
 
 WeatherDataType = Literal[
     "forecast",
-    "historical_average",
-    "seasonal_average",
     "unavailable",
 ]
 
