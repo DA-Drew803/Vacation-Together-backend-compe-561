@@ -10,7 +10,8 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.dependencies import get_current_member_id, get_trip_context
 from app.main import app
-from app.models.destination import Destination
+from app.models.destination import Destination, DestinationVotingState
+from app.models.trip import Trip
 from app.schemas.itinerary import Budget, EligibleMember, TripContext
 from app.services.destination import (
     DestinationInvalidError,
@@ -36,6 +37,11 @@ def db() -> Session:
 
     with Session(engine) as session:
         yield session
+
+
+def add_trip(db: Session, trip_id: uuid.UUID) -> None:
+    db.add(Trip(id=trip_id, name="Test trip"))
+    db.commit()
 
 
 def test_create_candidate(db: Session) -> None:
@@ -123,6 +129,7 @@ def test_update_ballot_rejects_duplicate_candidates(db: Session) -> None:
     trip_id = uuid.uuid4()
     member_id = uuid.uuid4()
     candidate = create_candidate(db, trip_id, "Tokyo", 0.9, "match", 950, "USD")
+    add_trip(db, trip_id)
     start_voting(db, trip_id, [member_id])
 
     with pytest.raises(DestinationInvalidError):
@@ -150,6 +157,7 @@ def test_update_ballot_success(db: Session) -> None:
         estimated_cost_per_person=950.00,
         currency="USD",
     )
+    add_trip(db, trip_id)
     start_voting(db, trip_id, [member_id])
 
     votes = update_ballot(
@@ -189,6 +197,7 @@ def test_update_ballot_rejects_candidate_from_another_trip(
         estimated_cost_per_person=950.00,
         currency="USD",
     )
+    add_trip(db, trip_two)
     start_voting(db, trip_two, [uuid.uuid4()])
 
     with pytest.raises(DestinationInvalidError):
@@ -205,6 +214,7 @@ def test_voting_freezes_candidates_and_selects_by_votes_then_score(db: Session) 
     member_one, member_two = uuid.uuid4(), uuid.uuid4()
     first = create_candidate(db, trip_id, "Tokyo", 0.7, "match", 950, "USD")
     second = create_candidate(db, trip_id, "Paris", 0.9, "match", 950, "USD")
+    add_trip(db, trip_id)
     start_voting(db, trip_id, [member_one, member_two])
 
     with pytest.raises(DestinationVotingConflictError):
@@ -223,6 +233,7 @@ def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> No
     member_one, member_two = uuid.uuid4(), uuid.uuid4()
     first = create_candidate(db, trip_id, "Tokyo", 0.9, "match", 950, "USD")
     second = create_candidate(db, trip_id, "Paris", 0.9, "match", 950, "USD")
+    add_trip(db, trip_id)
     start_voting(db, trip_id, [member_one, member_two])
     update_ballot(db, trip_id, member_one, [first.id])
 
@@ -233,25 +244,30 @@ def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> No
     with pytest.raises(DestinationVotingTieError):
         close_voting(db, trip_id, member_one)
 
-    with pytest.raises(DestinationVotingTieError):
-        close_voting(db, trip_id, member_one, uuid.uuid4())
+    state = db.get(DestinationVotingState, trip_id)
+    assert state is not None
+    assert state.status == "OPEN"
 
-    state = close_voting(db, trip_id, member_one, second.id)
+    state = close_voting(db, trip_id, member_two, second.id)
+    assert state.status == "CLOSED"
     assert state.selected_candidate_id == second.id
-    repeated = close_voting(db, trip_id, member_two, first.id)
-    assert repeated.selected_candidate_id == second.id
+    trip = db.get(Trip, trip_id)
+    assert trip is not None
+    assert trip.selected_destination_id == second.destination_id
 
 
-def test_manual_tie_selection_is_rejected_when_winner_is_unique(db: Session) -> None:
+def test_unique_winner_closes_without_manual_selection(db: Session) -> None:
     trip_id = uuid.uuid4()
     member_one = uuid.uuid4()
     first = create_candidate(db, trip_id, "Tokyo", 0.9, "match", 950, "USD")
-    second = create_candidate(db, trip_id, "Paris", 0.8, "match", 950, "USD")
+    create_candidate(db, trip_id, "Paris", 0.8, "match", 950, "USD")
+    add_trip(db, trip_id)
     start_voting(db, trip_id, [member_one])
     update_ballot(db, trip_id, member_one, [first.id])
 
-    with pytest.raises(DestinationVotingConflictError):
-        close_voting(db, trip_id, member_one, second.id)
+    state = close_voting(db, trip_id, member_one)
+    assert state.status == "CLOSED"
+    assert state.selected_candidate_id == first.id
 
 
 @pytest.fixture

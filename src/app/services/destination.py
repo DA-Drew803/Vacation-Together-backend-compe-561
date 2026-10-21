@@ -11,6 +11,7 @@ from app.models.destination import (
     DestinationVote,
     DestinationVotingState,
 )
+from app.models.trip import Trip
 
 
 class DestinationInvalidError(ValueError):
@@ -211,13 +212,12 @@ def close_voting(
     )
     if state is None:
         raise DestinationVotingConflictError("Voting is not open for this trip")
+    if str(member_uuid) not in state.frozen_member_ids:
+        raise DestinationVotingConflictError("Member is not eligible to close voting")
     if state.status == "CLOSED":
         return state
     if state.status != "OPEN":
         raise DestinationVotingConflictError("Voting is not open for this trip")
-    if str(member_uuid) not in state.frozen_member_ids:
-        raise DestinationVotingConflictError("Member is not eligible to close voting")
-
     votes = list(
         db.scalars(
             select(DestinationVote).where(
@@ -282,10 +282,21 @@ def close_voting(
                 "Manual selection is allowed only for a complete final tie"
             )
         top = final_tied[0]
+    trip = db.scalar(select(Trip).where(Trip.id == trip_uuid).with_for_update())
+    if trip is None:
+        raise DestinationVotingConflictError("Trip does not exist")
+    if trip.selected_destination_id is not None:
+        if trip.selected_destination_id != top.destination_id:
+            raise DestinationVotingConflictError("Trip already has a different destination")
+        raise DestinationVotingConflictError("Trip already has a selected destination")
     state.status = "CLOSED"
     state.selected_candidate_id = top.id
     state.closed_by_member_id = member_uuid
     state.closed_at = datetime.now(UTC)
+    trip.selected_destination_id = top.destination_id
+    trip.voting_closed_at = state.closed_at
+    if trip.state in {"PLANNING", "VOTING"}:
+        trip.state = "CLOSED"
     db.commit()
     db.refresh(state)
     return state
