@@ -81,3 +81,20 @@ class PreferenceRead(BaseModel):
     member_id: UUID
     interests: list[str]
     private_notes: str | None
+
+
+class GroupAvailability(BaseModel):
+    ranges: list[DateRange]
+
+
+class GroupBudget(BaseModel):
+    max_amount: Decimal
+    currency: str
+
+
+class GroupMatch(BaseModel):
+    common_date_ranges: GroupAvailability
+    group_max_budget: GroupBudget
+    interests: list[str]
+    ready: bool = True
+    reason: str | None = None

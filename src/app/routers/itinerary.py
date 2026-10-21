@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_member_id, get_trip_context
+from app.core.dependencies import get_current_member_id, get_itinerary_provider, get_trip_context
 from app.schemas.itinerary import (
     Approval,
     ApprovalInput,
@@ -17,6 +17,7 @@ from app.schemas.itinerary import (
 )
 from app.services import itinerary as itinerary_service
 from app.services.itinerary import ItineraryConflictError, ItineraryInvalidError
+from app.services.openai_itinerary import ItineraryProviderError, OpenAIItineraryProvider
 
 PHASE_5_ERROR_RESPONSES = {
     status.HTTP_400_BAD_REQUEST: {"model": Error, "description": "Invalid request"},
@@ -72,19 +73,25 @@ def create_revision(
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
     current_member_id: Annotated[str, Depends(get_current_member_id)],
+    provider: Annotated[OpenAIItineraryProvider | None, Depends(get_itinerary_provider)],
 ) -> dict:
     try:
-        revision = itinerary_service.request_revision(
-            db,
-            context.model_copy(update={"trip_id": trip_id}),
-            current_member_id,
-            revision_input,
-        )
+        effective_context = context.model_copy(update={"trip_id": trip_id})
+        if provider is None:
+            revision = itinerary_service.request_revision(
+                db, effective_context, current_member_id, revision_input
+            )
+        else:
+            revision = itinerary_service.execute_ai_revision(
+                db, effective_context, current_member_id, revision_input, provider
+            )
         return itinerary_service.serialize_revision(revision)
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
     except ItineraryInvalidError as error:
         raise invalid_response(error) from error
+    except ItineraryProviderError as error:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(error)) from error
 
 
 @router.get("/itinerary/approval", response_model=ApprovalProgress)

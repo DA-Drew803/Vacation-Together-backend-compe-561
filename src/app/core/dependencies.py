@@ -1,4 +1,4 @@
-from typing import Annotated, NoReturn
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, HTTPException, Path, status
@@ -9,24 +9,10 @@ from app.core.security import decode_access_token, oauth2_scheme
 from app.models.member import TripMember
 from app.models.user import User
 from app.schemas.itinerary import TripContext
+from app.services import itinerary as itinerary_service
 from app.services import member as member_service
 from app.services import user as user_service
-
-
-def integration_unavailable(name: str) -> NoReturn:
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail=f"{name} integration is not available",
-    )
-
-
-async def get_current_member_id() -> str:
-    integration_unavailable("Authentication")
-
-
-async def get_trip_context(trip_id: Annotated[str, Path()]) -> TripContext:
-    del trip_id
-    integration_unavailable("Trip context")
+from app.services.openai_itinerary import ItineraryProviderError, OpenAIItineraryProvider
 
 
 def get_current_user(
@@ -73,6 +59,31 @@ def get_current_trip_member(
         )
 
     return membership
+
+
+def get_current_member_id(
+    membership: Annotated[TripMember, Depends(get_current_trip_member)],
+) -> str:
+    return str(membership.id)
+
+
+def get_trip_context(
+    trip_id: Annotated[UUID, Path()],
+    membership: Annotated[TripMember, Depends(get_current_trip_member)],
+    db: Annotated[Session, Depends(get_db)],
+) -> TripContext:
+    del membership
+    try:
+        return itinerary_service.build_trip_context(db, trip_id)
+    except (itinerary_service.ItineraryConflictError, member_service.MemberConflictError) as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+
+
+def get_itinerary_provider() -> OpenAIItineraryProvider | None:
+    try:
+        return OpenAIItineraryProvider.from_env()
+    except ItineraryProviderError:
+        return None
 
 
 def require_trip_owner(

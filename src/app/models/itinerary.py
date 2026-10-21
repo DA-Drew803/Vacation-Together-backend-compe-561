@@ -34,9 +34,12 @@ class Itinerary(Base):
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
-    # External constraints wait for the teammate-owned table names to stabilize.
-    trip_id: Mapped[UUID] = mapped_column(Uuid, unique=True, index=True, nullable=False)
-    destination_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    trip_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("trips.id"), unique=True, index=True, nullable=False
+    )
+    destination_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("destinations.id"), nullable=False
+    )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     status: Mapped[str] = mapped_column(String, default="DRAFT", nullable=False)
     estimated_total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
@@ -58,6 +61,16 @@ class Itinerary(Base):
 
 class ItineraryItem(Base):
     __tablename__ = "itinerary_items"
+    __table_args__ = (
+        CheckConstraint("day_number >= 1", name="ck_itinerary_item_day_positive"),
+        CheckConstraint("position >= 1", name="ck_itinerary_item_position_positive"),
+        UniqueConstraint(
+            "itinerary_id",
+            "day_number",
+            "position",
+            name="uq_itinerary_item_position",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
     itinerary_id: Mapped[UUID] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
@@ -91,8 +104,9 @@ class ItineraryRevision(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=new_id)
     itinerary_id: Mapped[UUID] = mapped_column(ForeignKey("itineraries.id"), nullable=False)
-    # External constraint waits for the teammate-owned table name to stabilize.
-    requested_by_member_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    requested_by_member_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("trip_members.id"), nullable=False
+    )
     instruction: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String, default="PENDING", nullable=False)
     base_version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -115,8 +129,9 @@ class ItineraryApproval(Base):
         ForeignKey("itineraries.id"),
         primary_key=True,
     )
-    # External constraint waits for the teammate-owned table name to stabilize.
-    trip_member_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    trip_member_id: Mapped[UUID] = mapped_column(
+        Uuid, ForeignKey("trip_members.id"), primary_key=True
+    )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     approved: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

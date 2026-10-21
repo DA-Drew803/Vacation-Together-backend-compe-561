@@ -10,20 +10,28 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.models.destination import Destination, DestinationCandidate
 from app.models.itinerary import (
     Itinerary,
     ItineraryApproval,
     ItineraryItem,
     ItineraryRevision,
 )
+from app.models.member import TripMember
+from app.models.trip import Trip
+from app.models.user import User
 from app.schemas.itinerary import (
     ApprovalInput,
     ApprovalProgress,
+    Budget,
+    EligibleMember,
     ItineraryDraft,
     ItineraryItemInput,
     RevisionInput,
     TripContext,
+    WeatherDay,
 )
+from app.services import member as member_service
 
 if TYPE_CHECKING:
     from app.services.openai_itinerary import ItineraryDraftProvider, ItineraryRevisionProvider
@@ -38,6 +46,61 @@ class ItineraryConflictError(ValueError):
 
 class ItineraryInvalidError(ValueError):
     pass
+
+
+def build_trip_context(db: Session, trip_id: str | UUID) -> TripContext:
+    trip_uuid = parse_uuid(trip_id, "trip_id")
+    trip = db.get(Trip, trip_uuid)
+    if trip is None or trip.selected_destination_id is None:
+        raise ItineraryConflictError("Trip does not have a selected destination")
+    destination = db.get(Destination, trip.selected_destination_id)
+    if destination is None:
+        raise ItineraryConflictError("Selected destination does not exist")
+    match = member_service.get_group_match(db, trip_uuid)
+    rows = db.execute(
+        select(TripMember, User)
+        .join(User, User.id == TripMember.user_id)
+        .where(TripMember.trip_id == trip_uuid, TripMember.status == "ACTIVE")
+    ).all()
+    eligible_members = [
+        EligibleMember(
+            member_id=str(member.id),
+            display_name=user.display_name,
+            voting_eligible=member.voting_eligible,
+        )
+        for member, user in rows
+    ]
+    candidate = db.scalar(
+        select(DestinationCandidate).where(
+            DestinationCandidate.trip_id == trip_uuid,
+            DestinationCandidate.destination_id == destination.id,
+        )
+    )
+    weather = None
+    if candidate and candidate.weather_snapshot:
+        snapshot = candidate.weather_snapshot
+        if snapshot.get("data_type") == "forecast":
+            weather = [
+                WeatherDay(
+                    date=item["date"],
+                    condition=f"weather_code_{item.get('weather_code')}",
+                    temperature_high=item.get("temperature_high"),
+                    temperature_low=item.get("temperature_low"),
+                    precipitation_probability=item.get("precipitation_probability"),
+                )
+                for item in snapshot.get("days", [])
+            ]
+    return TripContext(
+        trip_id=str(trip.id),
+        selected_destination_id=str(destination.id),
+        destination_name=destination.name,
+        start_date=match["start_date"].isoformat(),
+        end_date=match["end_date"].isoformat(),
+        budget=Budget(max_amount=float(match["budget_amount"]), currency=match["currency"]),
+        eligible_members=eligible_members,
+        interests=match["interests"],
+        weather=weather,
+    )
 
 
 def money_value(value: float | Decimal) -> float:
@@ -89,9 +152,8 @@ def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
 def serialize_revision(revision: ItineraryRevision) -> dict:
     return {
         "id": str(revision.id),
-        "instruction": revision.instruction,
         "status": revision.status,
-        "base_version": revision.base_version,
+        "requested_version": revision.base_version,
     }
 
 
@@ -117,6 +179,10 @@ def replace_items(
     itinerary: Itinerary,
     item_inputs: list[ItineraryItemInput],
 ) -> None:
+    itinerary.items.clear()
+    object_session = Session.object_session(itinerary)
+    if object_session is not None:
+        object_session.flush()
     itinerary.items = [
         ItineraryItem(
             day_number=item.day_number,
@@ -470,6 +536,9 @@ def approve_current_version(
     progress = approval_progress(db, itinerary, eligible_ids)
     if progress.eligible_count > 0 and progress.approved_count == progress.eligible_count:
         itinerary.status = "FINALIZED"
+        trip = db.get(Trip, itinerary.trip_id)
+        if trip is not None:
+            trip.state = "FINALIZED"
 
     db.commit()
     return {

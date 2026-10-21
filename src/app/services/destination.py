@@ -12,7 +12,56 @@ from app.models.destination import (
     DestinationVotingState,
 )
 from app.models.trip import Trip
+from app.services import member as member_service
 from app.services.weather import fetch_weather_snapshot
+
+CURATED_DESTINATIONS = (
+    {
+        "name": "San Diego",
+        "location": "California, USA",
+        "baseline_cost": Decimal("700.00"),
+        "tags": ["beach", "food", "outdoors", "relaxation"],
+        "country_code": "US",
+        "latitude": Decimal("32.715736"),
+        "longitude": Decimal("-117.161087"),
+    },
+    {
+        "name": "Portland",
+        "location": "Oregon, USA",
+        "baseline_cost": Decimal("600.00"),
+        "tags": ["food", "nature", "arts", "outdoors"],
+        "country_code": "US",
+        "latitude": Decimal("45.515232"),
+        "longitude": Decimal("-122.678385"),
+    },
+    {
+        "name": "Seattle",
+        "location": "Washington, USA",
+        "baseline_cost": Decimal("850.00"),
+        "tags": ["food", "museums", "nature", "city"],
+        "country_code": "US",
+        "latitude": Decimal("47.606209"),
+        "longitude": Decimal("-122.332069"),
+    },
+    {
+        "name": "Las Vegas",
+        "location": "Nevada, USA",
+        "baseline_cost": Decimal("650.00"),
+        "tags": ["food", "nightlife", "entertainment", "city"],
+        "country_code": "US",
+        "latitude": Decimal("36.169941"),
+        "longitude": Decimal("-115.139832"),
+    },
+    {
+        "name": "Denver",
+        "location": "Colorado, USA",
+        "baseline_cost": Decimal("800.00"),
+        "tags": ["nature", "outdoors", "food", "adventure"],
+        "country_code": "US",
+        "latitude": Decimal("39.739236"),
+        "longitude": Decimal("-104.990251"),
+    },
+)
 
 
 class DestinationInvalidError(ValueError):
@@ -67,10 +116,70 @@ def serialize_candidate(candidate: DestinationCandidate) -> dict:
     }
 
 
+def serialize_candidate_contract(candidate: DestinationCandidate) -> dict:
+    return {
+        "id": candidate.id,
+        "destination_id": candidate.destination_id,
+        "name": candidate.destination.name,
+        "match_score": float(candidate.match_score),
+        "estimated_cost": {
+            "amount": float(candidate.estimated_cost_per_person),
+            "currency": candidate.currency,
+        },
+        "weather": candidate.weather_snapshot,
+        "reason": candidate.match_explanation,
+    }
+
+
 def serialize_candidates(
     candidates: list[DestinationCandidate],
 ) -> dict:
     return {"candidates": [serialize_candidate(candidate) for candidate in candidates]}
+
+
+def generate_candidates(db: Session, trip_id: uuid.UUID) -> list[DestinationCandidate]:
+    if db.scalar(select(DestinationVotingState).where(DestinationVotingState.trip_id == trip_id)):
+        raise DestinationVotingConflictError("Candidates cannot change after voting starts")
+    match = member_service.get_group_match(db, trip_id)
+    budget = Decimal(match["budget_amount"])
+    interests = set(match["interests"])
+    db.execute(delete(DestinationCandidate).where(DestinationCandidate.trip_id == trip_id))
+    generated: list[DestinationCandidate] = []
+    for item in CURATED_DESTINATIONS:
+        if item["baseline_cost"] > budget:
+            continue
+        destination = db.scalar(select(Destination).where(Destination.name == item["name"]))
+        if destination is None:
+            destination = Destination(**item)
+            db.add(destination)
+            db.flush()
+        overlap = interests.intersection(destination.tags)
+        score = Decimal(len(overlap)) / Decimal(max(len(interests), 1))
+        candidate = DestinationCandidate(
+            trip_id=trip_id,
+            destination_id=destination.id,
+            match_score=score.quantize(Decimal("0.0001")),
+            match_explanation=(
+                "Matches group interests: " + ", ".join(sorted(overlap))
+                if overlap
+                else "Fits the group budget"
+            ),
+            estimated_cost_per_person=destination.baseline_cost,
+            currency=match["currency"],
+            recommendation_data_status="calculated",
+        )
+        db.add(candidate)
+        db.flush()
+        candidate.destination = destination
+        enrich_candidate_weather(
+            db, candidate, match["start_date"], match["end_date"], commit=False
+        )
+        generated.append(candidate)
+    if not generated:
+        db.rollback()
+        raise DestinationVotingConflictError("No curated destinations fit the group budget")
+    db.commit()
+    return sorted(generated, key=lambda value: (-value.match_score, str(value.destination_id)))
 
 
 def get_votes_for_member(
@@ -96,6 +205,44 @@ def serialize_ballot(
             }
             for vote in votes
         ]
+    }
+
+
+def serialize_vote_contract(votes: list[DestinationVote], member_id: uuid.UUID) -> dict:
+    return {
+        "candidate_id": votes[0].destination_candidate_id if votes else None,
+        "member_id": member_id,
+    }
+
+
+def get_voting_progress(db: Session, trip_id: uuid.UUID) -> dict:
+    state = db.scalar(
+        select(DestinationVotingState).where(DestinationVotingState.trip_id == trip_id)
+    )
+    if state is None:
+        return {
+            "status": "NOT_STARTED",
+            "eligible_count": 0,
+            "voted_count": 0,
+            "selected_destination_id": None,
+            "tallies": {},
+        }
+    votes = list(db.scalars(select(DestinationVote).where(DestinationVote.trip_id == trip_id)))
+    tallies = {candidate_id: 0 for candidate_id in state.frozen_candidate_ids}
+    for vote in votes:
+        key = str(vote.destination_candidate_id)
+        if key in tallies:
+            tallies[key] += 1
+    selected_destination_id = None
+    if state.selected_candidate_id is not None:
+        candidate = db.get(DestinationCandidate, state.selected_candidate_id)
+        selected_destination_id = candidate.destination_id if candidate else None
+    return {
+        "status": state.status,
+        "eligible_count": len(state.frozen_member_ids),
+        "voted_count": len({str(vote.trip_member_id) for vote in votes}),
+        "selected_destination_id": selected_destination_id,
+        "tallies": tallies,
     }
 
 
@@ -272,24 +419,9 @@ def close_voting(
         if vote_counts[candidate.id] == top_vote_count
         and Decimal(candidate.match_score) == top_score
     ]
-    if len(final_tied) > 1:
-        if selected_candidate_id is None:
-            raise DestinationVotingTieError(
-                "Voting is tied; a final tied candidate must be selected"
-            )
-        selected_uuid = parse_uuid(selected_candidate_id, "selected_candidate_id")
-        tied_ids = {candidate.id for candidate in final_tied}
-        if selected_uuid not in tied_ids:
-            raise DestinationVotingTieError(
-                "Selected candidate is not in the final tied candidate set"
-            )
-        top = next(candidate for candidate in final_tied if candidate.id == selected_uuid)
-    else:
-        if selected_candidate_id is not None:
-            raise DestinationVotingConflictError(
-                "Manual selection is allowed only for a complete final tie"
-            )
-        top = final_tied[0]
+    if selected_candidate_id is not None:
+        raise DestinationVotingConflictError("Voting results cannot be manually overridden")
+    top = min(final_tied, key=lambda candidate: str(candidate.destination_id))
     trip = db.scalar(select(Trip).where(Trip.id == trip_uuid).with_for_update())
     if trip is None:
         raise DestinationVotingConflictError("Trip does not exist")
@@ -324,6 +456,8 @@ def enrich_candidate_weather(
     candidate: DestinationCandidate,
     start_date: date,
     end_date: date,
+    *,
+    commit: bool = True,
 ) -> DestinationCandidate:
     destination = candidate.destination
 
@@ -347,8 +481,9 @@ def enrich_candidate_weather(
         else:
             candidate.recommendation_data_status = "calculated"
 
-    db.commit()
-    db.refresh(candidate)
+    if commit:
+        db.commit()
+        db.refresh(candidate)
 
     return candidate
 

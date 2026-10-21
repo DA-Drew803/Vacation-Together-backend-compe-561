@@ -11,14 +11,13 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.dependencies import get_current_trip_member
 from app.main import app
-from app.models.destination import Destination, DestinationVotingState
+from app.models.destination import Destination
 from app.models.member import TripMember
 from app.models.trip import Trip
 from app.services import destination as destination_service
 from app.services.destination import (
     DestinationInvalidError,
     DestinationVotingConflictError,
-    DestinationVotingTieError,
     close_voting,
     create_candidate,
     enrich_candidate_weather,
@@ -236,7 +235,9 @@ def test_voting_freezes_candidates_and_selects_by_votes_then_score(db: Session) 
     assert trip.voting_closed_at is not None
 
 
-def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> None:
+def test_voting_requires_all_members_and_breaks_complete_tie_by_destination_id(
+    db: Session,
+) -> None:
     trip_id = uuid.uuid4()
     member_one, member_two = uuid.uuid4(), uuid.uuid4()
     first = create_candidate(db, trip_id, "Tokyo", 0.9, "match", 950, "USD")
@@ -249,19 +250,13 @@ def test_voting_requires_all_members_and_rejects_complete_tie(db: Session) -> No
         close_voting(db, trip_id, member_one)
 
     update_ballot(db, trip_id, member_two, [second.id])
-    with pytest.raises(DestinationVotingTieError):
-        close_voting(db, trip_id, member_one)
-
-    state = db.get(DestinationVotingState, trip_id)
-    assert state is not None
-    assert state.status == "OPEN"
-
-    state = close_voting(db, trip_id, member_two, second.id)
+    state = close_voting(db, trip_id, member_two)
     assert state.status == "CLOSED"
-    assert state.selected_candidate_id == second.id
+    expected = min((first, second), key=lambda candidate: str(candidate.destination_id))
+    assert state.selected_candidate_id == expected.id
     trip = db.get(Trip, trip_id)
     assert trip is not None
-    assert trip.selected_destination_id == second.destination_id
+    assert trip.selected_destination_id == expected.destination_id
 
 
 def test_unique_winner_closes_without_manual_selection(db: Session) -> None:
@@ -378,7 +373,7 @@ def test_get_candidates_returns_empty_list(
     response = client.get(f"/api/trips/{trip_id}/destination_candidates")
 
     assert response.status_code == 200
-    assert response.json() == {"candidates": []}
+    assert response.json() == []
 
 
 def test_get_my_ballot_returns_empty_ballot(
@@ -389,7 +384,8 @@ def test_get_my_ballot_returns_empty_ballot(
     response = client.get(f"/api/trips/{trip_id}/votes/me")
 
     assert response.status_code == 200
-    assert response.json() == {"selections": []}
+    assert response.json()["candidate_id"] is None
+    assert uuid.UUID(response.json()["member_id"])
 
 
 def test_enrich_candidate_weather_without_coordinates(db: Session) -> None:

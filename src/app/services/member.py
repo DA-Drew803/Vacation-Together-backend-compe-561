@@ -94,6 +94,41 @@ def get_shared_availability(
     return shared_start, shared_end
 
 
+def get_group_match(db: Session, trip_id: UUID) -> dict:
+    """Build the privacy-safe group match required by destination matching."""
+    members = [
+        member
+        for member, _user in member_repository.list_active_members(db, trip_id)
+        if member.voting_eligible
+    ]
+    if not members:
+        raise MemberConflictError("No eligible active members have been added")
+
+    shared_start, shared_end = get_shared_availability(db, trip_id)
+    budgets: list[MemberBudget] = []
+    interests: set[str] = set()
+    for member in members:
+        budget = member_repository.get_budget(db, member.id)
+        preference = member_repository.get_preference(db, member.id)
+        if budget is None or preference is None:
+            raise MemberConflictError("All eligible members must provide budget and preferences")
+        budgets.append(budget)
+        interests.update(item.strip().lower() for item in preference.interests if item.strip())
+
+    currencies = {budget.currency.upper() for budget in budgets}
+    if len(currencies) != 1:
+        raise MemberConflictError("All eligible member budgets must use the same currency")
+    limiting_budget = min(budgets, key=lambda item: item.max_amount)
+    return {
+        "start_date": shared_start,
+        "end_date": shared_end,
+        "budget_amount": limiting_budget.max_amount,
+        "currency": limiting_budget.currency.upper(),
+        "interests": sorted(interests),
+        "member_ids": [member.id for member in members],
+    }
+
+
 # Remove a member before voting begins.
 def remove_member(
     db: Session,

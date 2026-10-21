@@ -190,7 +190,7 @@ def test_uml_owned_column_types_and_openapi_contract() -> None:
         ItineraryRevision.__table__.c.requested_by_member_id,
         ItineraryApproval.__table__.c.trip_member_id,
     )
-    assert all(not column.foreign_keys for column in external_references)
+    assert all(column.foreign_keys for column in external_references)
     assert set(ItineraryApproval.__table__.primary_key.columns) == {
         ItineraryApproval.__table__.c.itinerary_id,
         ItineraryApproval.__table__.c.trip_member_id,
@@ -285,7 +285,7 @@ def test_changed_revision_increments_once_and_resets_approvals(harness: Harness)
     )
     assert started.status_code == 202
     assert started.json()["status"] == "RUNNING"
-    assert started.json()["base_version"] == 1
+    assert started.json()["requested_version"] == 1
 
     with harness.session_factory() as db:
         completed = itinerary_service.complete_revision(
@@ -496,7 +496,7 @@ def test_production_identity_dependency_cannot_be_bypassed_by_header(
     finally:
         app.dependency_overrides[get_current_member_id] = override
 
-    assert response.status_code == 503
+    assert response.status_code == 401
 
 
 def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None:

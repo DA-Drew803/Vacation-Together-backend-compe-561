@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.core.dependencies import (
     get_current_trip_member,
     get_current_user,
+    require_trip_owner,
 )
 from app.models.member import TripMember
 from app.models.user import User
@@ -80,7 +81,7 @@ def get_trip(
 def update_trip(
     trip_id: UUID,
     trip_data: TripUpdate,
-    current_membership: TripMember = Depends(get_current_trip_member),
+    current_membership: TripMember = Depends(require_trip_owner),
     db: Session = Depends(get_db),
 ):
     trip = trip_service.get_trip(
@@ -108,7 +109,7 @@ def update_trip(
 )
 def delete_trip(
     trip_id: UUID,
-    current_membership: TripMember = Depends(get_current_trip_member),
+    current_membership: TripMember = Depends(require_trip_owner),
     db: Session = Depends(get_db),
 ):
     trip = trip_service.get_trip(

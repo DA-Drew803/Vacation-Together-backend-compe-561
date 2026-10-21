@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, String, Uuid
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -40,6 +40,7 @@ class Trip(Base):
 
     selected_destination_id: Mapped[UUID | None] = mapped_column(
         Uuid,
+        ForeignKey("destinations.id"),
         nullable=True,
     )
 
