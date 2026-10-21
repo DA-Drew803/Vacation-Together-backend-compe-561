@@ -25,11 +25,11 @@ class Invitation(Base):
     __tablename__ = "invitations"
 
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'EXPIRED')",
-            name="ck_invitation_status",
-        ),
-    )
+    CheckConstraint(
+        "status IN ('PENDING', 'ACCEPTED', 'DECLINED', 'EXPIRED', 'REVOKED')",
+        name="ck_invitation_status",
+    ),
+)
 
     id: Mapped[UUID] = mapped_column(
         Uuid,

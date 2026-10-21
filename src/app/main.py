@@ -3,9 +3,13 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 
+
 from app.core.database import create_db_and_tables
 from app.routers.itinerary import router as itinerary_router
 from app.routers.User import router as user_router
+from app.routers.trip import router as trip_router
+from app.routers.member import router as member_router
+from app.routers.Invitation import router as invitation_router
 
 
 APP_VERSION = "0.1.0"
@@ -24,10 +28,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
+app.include_router(trip_router, prefix="/api")
 app.include_router(itinerary_router, prefix="/api")
 app.include_router(user_router, prefix="/api")
-
+app.include_router(member_router, prefix="/api")
+app.include_router(invitation_router, prefix="/api")
 
 @app.get("/")
 def read_root() -> dict[str, str | bool]:
