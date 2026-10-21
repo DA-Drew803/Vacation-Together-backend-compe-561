@@ -1181,7 +1181,7 @@ def test_current_payload_conversion_failure_cleans_up_revision(
             del value
             raise RuntimeError("payload conversion failed")
 
-        monkeypatch.setattr(itinerary_service, "_money", fail_conversion)
+        monkeypatch.setattr(itinerary_service, "money_value", fail_conversion)
         with pytest.raises(RuntimeError, match="payload conversion failed"):
             itinerary_service.execute_ai_revision(
                 db,

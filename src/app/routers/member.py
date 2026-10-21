@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_member_id
+from app.core.dependencies import get_current_trip_member, require_trip_owner
+from app.models.member import TripMember
 from app.schemas.member import (
     AvailabilityRead,
     AvailabilityUpdate,
@@ -21,7 +22,8 @@ from app.services import member as member_service
 router = APIRouter(prefix="/trips/{trip_id}", tags=["members"])
 
 SessionDep = Annotated[Session, Depends(get_db)]
-CurrentUserIdDep = Annotated[UUID, Depends(get_current_member_id)]
+CurrentMembershipDep = Annotated[TripMember, Depends(get_current_trip_member)]
+OwnerMembershipDep = Annotated[TripMember, Depends(require_trip_owner)]
 
 
 # Return the active members for a trip.
@@ -29,10 +31,10 @@ CurrentUserIdDep = Annotated[UUID, Depends(get_current_member_id)]
 def get_members(
     trip_id: UUID,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> list[MemberRead]:
     try:
-        rows = member_service.list_members(db, trip_id, current_user_id)
+        rows = member_service.list_members(db, trip_id, current_membership.user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
 
@@ -55,10 +57,10 @@ def remove_member(
     trip_id: UUID,
     member_id: UUID,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    owner_membership: OwnerMembershipDep,
 ) -> dict[str, str]:
     try:
-        member_service.remove_member(db, trip_id, member_id, current_user_id)
+        member_service.remove_member(db, trip_id, member_id, owner_membership.user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except member_service.MemberNotFoundError as error:
@@ -72,10 +74,10 @@ def remove_member(
 def get_my_availability(
     trip_id: UUID,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> AvailabilityRead:
     try:
-        member, ranges = member_service.get_availability(db, trip_id, current_user_id)
+        member, ranges = member_service.get_availability(db, trip_id, current_membership.user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     return AvailabilityRead(
@@ -91,11 +93,11 @@ def update_my_availability(
     trip_id: UUID,
     data: AvailabilityUpdate,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> AvailabilityRead:
     try:
         member, ranges = member_service.replace_availability(
-            db, trip_id, current_user_id, data
+            db, trip_id, current_membership.user_id, data
         )
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
@@ -115,10 +117,10 @@ def update_my_availability(
 def get_my_budget(
     trip_id: UUID,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> BudgetRead:
     try:
-        member, budget = member_service.get_budget(db, trip_id, current_user_id)
+        member, budget = member_service.get_budget(db, trip_id, current_membership.user_id)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except member_service.MemberConflictError as error:
@@ -131,10 +133,10 @@ def update_my_budget(
     trip_id: UUID,
     data: BudgetUpdate,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> BudgetRead:
     try:
-        member, budget = member_service.set_budget(db, trip_id, current_user_id, data)
+        member, budget = member_service.set_budget(db, trip_id, current_membership.user_id, data)
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except member_service.MemberNotFoundError as error:
@@ -149,10 +151,12 @@ def update_my_budget(
 def get_my_preferences(
     trip_id: UUID,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> PreferenceRead:
     try:
-        member, preference = member_service.get_preferences(db, trip_id, current_user_id)
+        member, preference = member_service.get_preferences(
+            db, trip_id, current_membership.user_id
+        )
     except member_service.MemberForbiddenError as error:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(error)) from error
     except member_service.MemberNotFoundError as error:
@@ -170,13 +174,13 @@ def update_my_preferences(
     trip_id: UUID,
     data: PreferenceUpdate,
     db: SessionDep,
-    current_user_id: CurrentUserIdDep,
+    current_membership: CurrentMembershipDep,
 ) -> PreferenceRead:
     try:
         member, preference = member_service.set_preferences(
             db,
             trip_id,
-            current_user_id,
+            current_membership.user_id,
             data,
         )
     except member_service.MemberForbiddenError as error:

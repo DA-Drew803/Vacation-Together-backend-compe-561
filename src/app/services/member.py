@@ -255,11 +255,7 @@ def add_trip_member(
         role=role,
     )
 
-    db.add(member)
-    db.commit()
-    db.refresh(member)
-
-    return member
+    return member_repository.save_trip_member(db, member)
 
 
 def update_trip_member(
@@ -271,15 +267,11 @@ def update_trip_member(
         raise ValueError("Role must be OWNER or MEMBER")
     member.role = role
 
-    db.commit()
-    db.refresh(member)
-
-    return member
+    return member_repository.save_trip_member(db, member)
 
 
 def remove_trip_member(
     db: Session,
     member: TripMember,
 ) -> None:
-    db.delete(member)
-    db.commit()
+    member_repository.delete_trip_member(db, member)

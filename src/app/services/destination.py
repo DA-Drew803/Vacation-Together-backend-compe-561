@@ -26,7 +26,7 @@ class DestinationVotingTieError(DestinationVotingConflictError):
     pass
 
 
-def _uuid(value: str | uuid.UUID, field_name: str) -> uuid.UUID:
+def parse_uuid(value: str | uuid.UUID, field_name: str) -> uuid.UUID:
     if isinstance(value, uuid.UUID):
         return value
 
@@ -42,7 +42,7 @@ def get_candidates_for_trip(
 ) -> list[DestinationCandidate]:
     statement = (
         select(DestinationCandidate)
-        .where(DestinationCandidate.trip_id == _uuid(trip_id, "trip_id"))
+        .where(DestinationCandidate.trip_id == parse_uuid(trip_id, "trip_id"))
         .options(selectinload(DestinationCandidate.destination))
     )
     return list(db.scalars(statement).all())
@@ -78,8 +78,8 @@ def get_votes_for_member(
     trip_member_id: str | uuid.UUID,
 ) -> list[DestinationVote]:
     statement = select(DestinationVote).where(
-        DestinationVote.trip_id == _uuid(trip_id, "trip_id"),
-        DestinationVote.trip_member_id == _uuid(trip_member_id, "trip_member_id"),
+        DestinationVote.trip_id == parse_uuid(trip_id, "trip_id"),
+        DestinationVote.trip_member_id == parse_uuid(trip_member_id, "trip_member_id"),
     )
 
     return list(db.scalars(statement).all())
@@ -104,8 +104,8 @@ def update_ballot(
     trip_member_id: str | uuid.UUID,
     candidate_ids: list[uuid.UUID],
 ) -> list[DestinationVote]:
-    trip_uuid = _uuid(trip_id, "trip_id")
-    member_uuid = _uuid(trip_member_id, "trip_member_id")
+    trip_uuid = parse_uuid(trip_id, "trip_id")
+    member_uuid = parse_uuid(trip_member_id, "trip_member_id")
 
     state = db.scalar(
         select(DestinationVotingState)
@@ -123,7 +123,7 @@ def update_ballot(
     if len(candidate_ids) != len(set(candidate_ids)):
         raise DestinationInvalidError("Ballot contains duplicate destination candidates")
 
-    candidate_uuid = _uuid(candidate_ids[0], "destination_candidate_id")
+    candidate_uuid = parse_uuid(candidate_ids[0], "destination_candidate_id")
     if str(candidate_uuid) not in state.frozen_candidate_ids:
         raise DestinationVotingConflictError("Candidate was not frozen for this vote")
 
@@ -173,8 +173,8 @@ def start_voting(
     The caller must obtain member IDs from persisted TripMember rows; this service
     deliberately has no client-facing endpoint for supplying them.
     """
-    trip_uuid = _uuid(trip_id, "trip_id")
-    member_ids = [_uuid(value, "trip_member_id") for value in eligible_member_ids]
+    trip_uuid = parse_uuid(trip_id, "trip_id")
+    member_ids = [parse_uuid(value, "trip_member_id") for value in eligible_member_ids]
     if not member_ids or len(member_ids) != len(set(member_ids)):
         raise DestinationVotingConflictError("Voting requires a non-empty member set")
     existing = db.scalar(
@@ -203,8 +203,8 @@ def close_voting(
     closing_member_id: str | uuid.UUID,
     selected_candidate_id: str | uuid.UUID | None = None,
 ) -> DestinationVotingState:
-    trip_uuid = _uuid(trip_id, "trip_id")
-    member_uuid = _uuid(closing_member_id, "trip_member_id")
+    trip_uuid = parse_uuid(trip_id, "trip_id")
+    member_uuid = parse_uuid(closing_member_id, "trip_member_id")
     state = db.scalar(
         select(DestinationVotingState)
         .where(DestinationVotingState.trip_id == trip_uuid)
@@ -224,7 +224,7 @@ def close_voting(
                 DestinationVote.trip_id == trip_uuid,
                 DestinationVote.destination_candidate_id.in_(
                     [
-                        _uuid(value, "destination_candidate_id")
+                        parse_uuid(value, "destination_candidate_id")
                         for value in state.frozen_candidate_ids
                     ]
                 ),
@@ -240,7 +240,7 @@ def close_voting(
             select(DestinationCandidate).where(
                 DestinationCandidate.id.in_(
                     [
-                        _uuid(value, "destination_candidate_id")
+                        parse_uuid(value, "destination_candidate_id")
                         for value in state.frozen_candidate_ids
                     ]
                 ),
@@ -269,7 +269,7 @@ def close_voting(
             raise DestinationVotingTieError(
                 "Voting is tied; a final tied candidate must be selected"
             )
-        selected_uuid = _uuid(selected_candidate_id, "selected_candidate_id")
+        selected_uuid = parse_uuid(selected_candidate_id, "selected_candidate_id")
         tied_ids = {candidate.id for candidate in final_tied}
         if selected_uuid not in tied_ids:
             raise DestinationVotingTieError(
@@ -322,7 +322,7 @@ def create_candidate(
     weather_snapshot: dict | None = None,
     recommendation_data_status: str = "pending",
 ) -> DestinationCandidate:
-    trip_uuid = _uuid(trip_id, "trip_id")
+    trip_uuid = parse_uuid(trip_id, "trip_id")
 
     state = db.scalar(
         select(DestinationVotingState).where(DestinationVotingState.trip_id == trip_uuid)

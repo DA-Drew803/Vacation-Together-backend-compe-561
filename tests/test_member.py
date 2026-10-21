@@ -1,9 +1,7 @@
 from collections.abc import Generator
-from typing import Annotated
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import Header
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
@@ -11,7 +9,7 @@ from sqlalchemy.orm import Session, configure_mappers, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
-from app.core.dependencies import get_current_member_id
+from app.core.security import create_access_token
 from app.main import app
 from app.models.destination import DestinationVotingState
 from app.models.member import MemberPreference, TripMember
@@ -88,13 +86,7 @@ def member_api() -> Generator[tuple[TestClient, sessionmaker[Session], dict[str,
         with sessions() as db:
             yield db
 
-    async def override_current_user(
-        user_id: Annotated[str | None, Header(alias="X-Test-User-Id")] = None,
-    ) -> UUID:
-        return UUID(user_id) if user_id else ids["owner_user"]
-
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_current_member_id] = override_current_user
     with TestClient(app) as client:
         yield client, sessions, ids
 
@@ -139,29 +131,25 @@ def test_one_preference_per_member_is_enforced(
         ("put", "/api/trips/{trip}/budget/me"),
     ],
 )
-def test_member_routes_preserve_authentication_503_boundary(
+def test_member_routes_require_jwt_authentication(
     member_api: tuple[TestClient, sessionmaker[Session], dict[str, UUID]],
     method: str,
     path: str,
 ) -> None:
     client, _, ids = member_api
-    override = app.dependency_overrides.pop(get_current_member_id)
-    try:
-        response = client.request(
-            method,
-            path.format(trip=ids["trip"], member=ids["member_member"]),
-            json=(
-                {"interests": []}
-                if "preferences" in path
-                else {"ranges": [{"start_date": "2027-01-01", "end_date": "2027-01-02"}]}
-                if "availability" in path
-                else {"max_amount": 100, "currency": "USD"}
-            ) if method == "put" else None,
-        )
-    finally:
-        app.dependency_overrides[get_current_member_id] = override
+    response = client.request(
+        method,
+        path.format(trip=ids["trip"], member=ids["member_member"]),
+        json=(
+            {"interests": []}
+            if "preferences" in path
+            else {"ranges": [{"start_date": "2027-01-01", "end_date": "2027-01-02"}]}
+            if "availability" in path
+            else {"max_amount": 100, "currency": "USD"}
+        ) if method == "put" else None,
+    )
 
-    assert response.status_code == 503
+    assert response.status_code == 401
 
 
 def test_member_add_route_is_not_exposed(
@@ -180,10 +168,10 @@ def test_membership_authorization_and_private_preferences(
     member_api: tuple[TestClient, sessionmaker[Session], dict[str, UUID]],
 ) -> None:
     client, _, ids = member_api
-    outsider_headers = {"X-Test-User-Id": str(ids["outsider_user"])}
+    outsider_headers = {"Authorization": f"Bearer {create_access_token(str(ids['outsider_user']))}"}
     assert client.get(f"/api/trips/{ids['trip']}/members", headers=outsider_headers).status_code == 403
 
-    member_headers = {"X-Test-User-Id": str(ids["member_user"])}
+    member_headers = {"Authorization": f"Bearer {create_access_token(str(ids['member_user']))}"}
     saved = client.put(
         f"/api/trips/{ids['trip']}/preferences/me",
         headers=member_headers,
@@ -208,10 +196,11 @@ def test_membership_authorization_and_private_preferences(
     assert budget.status_code == 200
     assert budget.json()["currency"] == "USD"
 
-    owner_preferences = client.get(f"/api/trips/{ids['trip']}/preferences/me")
+    owner_headers = {"Authorization": f"Bearer {create_access_token(str(ids['owner_user']))}"}
+    owner_preferences = client.get(f"/api/trips/{ids['trip']}/preferences/me", headers=owner_headers)
     assert owner_preferences.status_code == 404
 
-    members = client.get(f"/api/trips/{ids['trip']}/members")
+    members = client.get(f"/api/trips/{ids['trip']}/members", headers=member_headers)
     assert members.status_code == 200
     assert len(members.json()) == 2
     assert "private_notes" not in str(members.json())
@@ -222,8 +211,9 @@ def test_removal_rejects_cross_trip_target_and_voting_freeze(
     member_api: tuple[TestClient, sessionmaker[Session], dict[str, UUID]],
 ) -> None:
     client, sessions, ids = member_api
+    owner_headers = {"Authorization": f"Bearer {create_access_token(str(ids['owner_user']))}"}
     cross_trip = client.delete(
-        f"/api/trips/{ids['trip']}/members/{ids['other_member']}"
+        f"/api/trips/{ids['trip']}/members/{ids['other_member']}", headers=owner_headers
     )
     assert cross_trip.status_code == 404
 
@@ -239,7 +229,7 @@ def test_removal_rejects_cross_trip_target_and_voting_freeze(
         db.commit()
 
     frozen = client.delete(
-        f"/api/trips/{ids['trip']}/members/{ids['member_member']}"
+        f"/api/trips/{ids['trip']}/members/{ids['member_member']}", headers=owner_headers
     )
     assert frozen.status_code == 409
 
@@ -253,7 +243,7 @@ def test_removal_rejects_cross_trip_target_and_voting_freeze(
     ):
         response = client.put(
             f"/api/trips/{ids['trip']}/{path}",
-            headers={"X-Test-User-Id": str(ids["owner_user"])},
+        headers=owner_headers,
             json=payload,
         )
         assert response.status_code == 409

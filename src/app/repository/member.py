@@ -24,6 +24,20 @@ def get_active_trip_member(
     )
 
 
+def get_trip_member_by_user(
+    db: Session,
+    trip_id: UUID,
+    user_id: UUID,
+) -> TripMember | None:
+    """Return a member record for a user, including inactive records."""
+    return db.scalar(
+        select(TripMember).where(
+            TripMember.trip_id == trip_id,
+            TripMember.user_id == user_id,
+        )
+    )
+
+
 # Get all active members in a trip.
 def list_active_members(
     db: Session,
@@ -101,3 +115,31 @@ def get_budget(db: Session, trip_member_id: UUID) -> MemberBudget | None:
 
 def save_budget(db: Session, budget: MemberBudget) -> None:
     db.add(budget)
+
+
+def create_trip_member(
+    db: Session,
+    trip_id: UUID,
+    user_id: UUID,
+    role: str,
+) -> TripMember:
+    member = TripMember(
+        trip_id=trip_id,
+        user_id=user_id,
+        role=role,
+        status="ACTIVE",
+        voting_eligible=True,
+    )
+    db.add(member)
+    return member
+
+
+def save_trip_member(db: Session, member: TripMember) -> TripMember:
+    db.commit()
+    db.refresh(member)
+    return member
+
+
+def delete_trip_member(db: Session, member: TripMember) -> None:
+    db.delete(member)
+    db.commit()

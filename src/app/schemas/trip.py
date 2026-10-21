@@ -17,9 +17,6 @@ class TripUpdate(BaseModel):
 
     state: str | None = None
 
-    selected_destination_id: UUID | None = None
-
-
 class TripResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

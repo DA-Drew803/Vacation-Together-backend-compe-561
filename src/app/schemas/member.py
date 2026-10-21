@@ -25,6 +25,8 @@ class TripMemberResponse(BaseModel):
     trip_id: UUID
     user_id: UUID
     role: str
+    status: str
+    voting_eligible: bool
     joined_at: datetime
 
 

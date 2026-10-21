@@ -6,7 +6,12 @@ from app.models.destination import (
     DestinationVotingState,
 )
 from app.models.invitation import Invitation
-from app.models.itinerary import Itinerary, ItineraryApproval, ItineraryItem, ItineraryRevision
+from app.models.itinerary import (
+    Itinerary,
+    ItineraryApproval,
+    ItineraryItem,
+    ItineraryRevision,
+)
 from app.models.member import MemberAvailability, MemberBudget, MemberPreference, TripMember
 from app.models.trip import Trip
 from app.models.user import User
