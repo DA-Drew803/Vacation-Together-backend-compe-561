@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.Invitation import Invitation
+from app.models.invitation import Invitation
 from app.models.member import TripMember
 from app.repository import member as member_repository
 

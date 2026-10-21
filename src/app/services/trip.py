@@ -39,15 +39,11 @@ def update_trip(
     trip: Trip,
     name: str | None = None,
     state: str | None = None,
-    selected_destination_id: UUID | None = None,
 ) -> Trip:
     if name is not None:
         trip.name = name
     if state is not None:
         trip.state = state
-    if selected_destination_id is not None:
-        trip.selected_destination_id = selected_destination_id
-
     db.commit()
     db.refresh(trip)
     return trip

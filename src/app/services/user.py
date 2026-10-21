@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.User import User
+from app.models.user import User
 
 PASSWORD_ITERATIONS = 310_000
 

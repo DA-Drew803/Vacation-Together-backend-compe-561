@@ -9,7 +9,7 @@ from app.core.dependencies import (
     get_current_user,
 )
 from app.models.member import TripMember
-from app.models.User import User
+from app.models.user import User
 from app.schemas.trip import TripCreate, TripResponse, TripUpdate
 from app.services import trip as trip_service
 
@@ -99,7 +99,6 @@ def update_trip(
         trip=trip,
         name=trip_data.name,
         state=trip_data.state,
-        selected_destination_id=trip_data.selected_destination_id,
     )
 
 

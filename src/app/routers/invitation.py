@@ -10,7 +10,7 @@ from app.core.dependencies import (
     require_trip_owner,
 )
 from app.models.member import TripMember
-from app.models.User import User
+from app.models.user import User
 from app.schemas.invitation import (
     InvitationCreate,
     InvitationCreateResponse,

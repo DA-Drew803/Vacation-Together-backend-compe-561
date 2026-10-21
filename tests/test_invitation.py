@@ -5,9 +5,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.database import Base
-from app.models.Invitation import Invitation
+from app.models.invitation import Invitation
 from app.models.trip import Trip
-from app.models.User import User
+from app.models.user import User
 from app.services.invitation import (
     accept_invitation,
     create_invitation,

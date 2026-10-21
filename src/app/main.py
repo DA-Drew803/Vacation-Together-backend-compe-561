@@ -6,11 +6,11 @@ from fastapi import FastAPI
 from app.core.database import create_db_and_tables
 from app.routers.auth import router as auth_router
 from app.routers.destination import router as destination_router
-from app.routers.Invitation import router as invitation_router
+from app.routers.invitation import router as invitation_router
 from app.routers.itinerary import router as itinerary_router
 from app.routers.member import router as member_router
 from app.routers.trip import router as trip_router
-from app.routers.User import router as user_router
+from app.routers.user import router as user_router
 
 APP_VERSION = "0.1.0"
 

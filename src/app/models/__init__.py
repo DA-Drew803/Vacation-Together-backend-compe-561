@@ -5,16 +5,16 @@ from app.models.destination import (
     DestinationVote,
     DestinationVotingState,
 )
-from app.models.Invitation import Invitation
+from app.models.invitation import Invitation
 from app.models.itinerary import (
     Itinerary,
     ItineraryApproval,
     ItineraryItem,
     ItineraryRevision,
 )
-from app.models.member import TripMember
+from app.models.member import MemberAvailability, MemberBudget, MemberPreference, TripMember
 from app.models.trip import Trip
-from app.models.User import User
+from app.models.user import User
 
 __all__ = [
     "Base",
@@ -27,6 +27,9 @@ __all__ = [
     "ItineraryApproval",
     "ItineraryItem",
     "ItineraryRevision",
+    "MemberAvailability",
+    "MemberBudget",
+    "MemberPreference",
     "Trip",
     "TripMember",
     "User",
