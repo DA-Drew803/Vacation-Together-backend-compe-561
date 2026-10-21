@@ -117,9 +117,7 @@ class MemberAvailability(Base):
 class MemberBudget(Base):
     __tablename__ = "member_budgets"
 
-    trip_member_id: Mapped[UUID] = mapped_column(
-        ForeignKey("trip_members.id"), primary_key=True
-    )
+    trip_member_id: Mapped[UUID] = mapped_column(ForeignKey("trip_members.id"), primary_key=True)
     max_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
 
@@ -129,9 +127,7 @@ class MemberBudget(Base):
 class MemberPreference(Base):
     __tablename__ = "member_preferences"
 
-    trip_member_id: Mapped[UUID] = mapped_column(
-        ForeignKey("trip_members.id"), primary_key=True
-    )
+    trip_member_id: Mapped[UUID] = mapped_column(ForeignKey("trip_members.id"), primary_key=True)
     interests: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     private_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 

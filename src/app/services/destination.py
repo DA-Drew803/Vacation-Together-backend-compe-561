@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, select
@@ -12,6 +12,7 @@ from app.models.destination import (
     DestinationVotingState,
 )
 from app.models.trip import Trip
+from app.services.weather import fetch_weather_snapshot
 
 
 class DestinationInvalidError(ValueError):
@@ -185,12 +186,19 @@ def start_voting(
     candidates = get_candidates_for_trip(db, trip_uuid)
     if not candidates:
         raise DestinationVotingConflictError("Voting requires destination candidates")
+    trip = db.scalar(select(Trip).where(Trip.id == trip_uuid).with_for_update())
+    if trip is None:
+        raise DestinationVotingConflictError("Trip does not exist")
+    if trip.state not in {"PLANNING", "VOTING"}:
+        raise DestinationVotingConflictError("Voting cannot start for this trip")
     state = DestinationVotingState(
         trip_id=trip_uuid,
         status="OPEN",
         frozen_member_ids=[str(value) for value in member_ids],
         frozen_candidate_ids=[str(candidate.id) for candidate in candidates],
     )
+    trip.state = "VOTING"
+    trip.voting_started_at = datetime.now(UTC)
     db.add(state)
     db.commit()
     db.refresh(state)
@@ -311,6 +319,40 @@ def get_destination_by_name(
     return db.scalar(statement)
 
 
+def enrich_candidate_weather(
+    db: Session,
+    candidate: DestinationCandidate,
+    start_date: date,
+    end_date: date,
+) -> DestinationCandidate:
+    destination = candidate.destination
+
+    if destination.latitude is None or destination.longitude is None:
+        candidate.weather_snapshot = {
+            "data_type": "unavailable",
+            "source": "open-meteo",
+            "days": [],
+        }
+        candidate.recommendation_data_status = "partial"
+    else:
+        candidate.weather_snapshot = fetch_weather_snapshot(
+            float(destination.latitude),
+            float(destination.longitude),
+            start_date,
+            end_date,
+        )
+
+        if candidate.weather_snapshot["data_type"] == "unavailable":
+            candidate.recommendation_data_status = "partial"
+        else:
+            candidate.recommendation_data_status = "calculated"
+
+    db.commit()
+    db.refresh(candidate)
+
+    return candidate
+
+
 def create_candidate(
     db: Session,
     trip_id: str | uuid.UUID,
@@ -321,6 +363,8 @@ def create_candidate(
     currency: str,
     weather_snapshot: dict | None = None,
     recommendation_data_status: str = "pending",
+    weather_start_date: date | None = None,
+    weather_end_date: date | None = None,
 ) -> DestinationCandidate:
     trip_uuid = parse_uuid(trip_id, "trip_id")
 
@@ -366,6 +410,17 @@ def create_candidate(
     )
 
     db.add(candidate)
+    if (weather_start_date is None) != (weather_end_date is None):
+        raise DestinationInvalidError("Both weather start and end dates are required")
+    if weather_snapshot is None and weather_start_date is not None:
+        db.flush()
+        enrich_candidate_weather(
+            db,
+            candidate,
+            weather_start_date,
+            weather_end_date,
+        )
+        return candidate
     db.commit()
     db.refresh(candidate)
 

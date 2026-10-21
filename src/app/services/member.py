@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -54,6 +55,43 @@ def list_members(
 ) -> list[tuple[TripMember, User]]:
     require_active_member(db, trip_id, current_user_id)
     return member_repository.list_active_members(db, trip_id)
+
+
+def get_shared_availability(
+    db: Session,
+    trip_id: UUID,
+) -> tuple[date, date]:
+    """Return the earliest date range shared by all eligible active members."""
+    members = [
+        member
+        for member, _user in member_repository.list_active_members(db, trip_id)
+        if member.voting_eligible
+    ]
+    if not members:
+        raise MemberConflictError("No eligible active members have been added")
+
+    first_ranges = member_repository.list_availability(db, members[0].id)
+    if not first_ranges:
+        raise MemberConflictError("All eligible members must provide availability")
+    shared_ranges = [(item.start_date, item.end_date) for item in first_ranges]
+
+    for member in members[1:]:
+        member_ranges = member_repository.list_availability(db, member.id)
+        intersections: list[tuple[date, date]] = []
+        for shared_range in shared_ranges:
+            for member_range in member_ranges:
+                start_date = max(shared_range[0], member_range.start_date)
+                end_date = min(shared_range[1], member_range.end_date)
+                if start_date <= end_date:
+                    intersections.append((start_date, end_date))
+        if not intersections:
+            raise MemberConflictError("Eligible members do not share available dates")
+        shared_ranges = intersections
+
+    shared_start, shared_end = min(shared_ranges, key=lambda item: item[0])
+    if shared_start > shared_end:
+        raise MemberConflictError("Eligible members do not share available dates")
+    return shared_start, shared_end
 
 
 # Remove a member before voting begins.
@@ -149,7 +187,9 @@ def set_budget(
     currency = data.currency.strip().upper()
     budget = member_repository.get_budget(db, member.id)
     if budget is None:
-        budget = MemberBudget(trip_member_id=member.id, max_amount=data.max_amount, currency=currency)
+        budget = MemberBudget(
+            trip_member_id=member.id, max_amount=data.max_amount, currency=currency
+        )
     else:
         budget.max_amount = data.max_amount
         budget.currency = currency

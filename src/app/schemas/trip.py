@@ -17,6 +17,7 @@ class TripUpdate(BaseModel):
 
     state: str | None = None
 
+
 class TripResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,13 +13,16 @@ from app.core.database import Base, get_db
 from app.core.security import create_access_token
 from app.main import app
 from app.models.destination import DestinationVotingState
-from app.models.member import MemberPreference, TripMember
+from app.models.member import MemberAvailability, MemberPreference, TripMember
 from app.models.trip import Trip
 from app.models.user import User
+from app.services import member as member_service
 
 
 @pytest.fixture()
-def member_api() -> Generator[tuple[TestClient, sessionmaker[Session], dict[str, UUID]], None, None]:
+def member_api() -> Generator[
+    tuple[TestClient, sessionmaker[Session], dict[str, UUID]], None, None
+]:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -118,6 +122,61 @@ def test_one_preference_per_member_is_enforced(
             db.commit()
 
 
+def test_shared_availability_uses_common_intersection(
+    member_api: tuple[TestClient, sessionmaker[Session], dict[str, UUID]],
+) -> None:
+    _, sessions, ids = member_api
+    with sessions() as db:
+        db.add_all(
+            [
+                MemberAvailability(
+                    trip_member_id=ids["owner_member"],
+                    start_date=date(2027, 6, 10),
+                    end_date=date(2027, 6, 17),
+                ),
+                MemberAvailability(
+                    trip_member_id=ids["member_member"],
+                    start_date=date(2027, 6, 12),
+                    end_date=date(2027, 6, 15),
+                ),
+            ]
+        )
+        db.commit()
+
+        assert member_service.get_shared_availability(db, ids["trip"]) == (
+            date(2027, 6, 12),
+            date(2027, 6, 15),
+        )
+
+
+def test_shared_availability_rejects_no_overlap(
+    member_api: tuple[TestClient, sessionmaker[Session], dict[str, UUID]],
+) -> None:
+    _, sessions, ids = member_api
+    with sessions() as db:
+        db.add_all(
+            [
+                MemberAvailability(
+                    trip_member_id=ids["owner_member"],
+                    start_date=date(2027, 6, 10),
+                    end_date=date(2027, 6, 11),
+                ),
+                MemberAvailability(
+                    trip_member_id=ids["member_member"],
+                    start_date=date(2027, 6, 12),
+                    end_date=date(2027, 6, 15),
+                ),
+            ]
+        )
+        db.commit()
+
+        with pytest.raises(
+            member_service.MemberConflictError,
+            match="do not share available dates",
+        ):
+            member_service.get_shared_availability(db, ids["trip"])
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
@@ -146,7 +205,9 @@ def test_member_routes_require_jwt_authentication(
             else {"ranges": [{"start_date": "2027-01-01", "end_date": "2027-01-02"}]}
             if "availability" in path
             else {"max_amount": 100, "currency": "USD"}
-        ) if method == "put" else None,
+        )
+        if method == "put"
+        else None,
     )
 
     assert response.status_code == 401
@@ -169,7 +230,9 @@ def test_membership_authorization_and_private_preferences(
 ) -> None:
     client, _, ids = member_api
     outsider_headers = {"Authorization": f"Bearer {create_access_token(str(ids['outsider_user']))}"}
-    assert client.get(f"/api/trips/{ids['trip']}/members", headers=outsider_headers).status_code == 403
+    assert (
+        client.get(f"/api/trips/{ids['trip']}/members", headers=outsider_headers).status_code == 403
+    )
 
     member_headers = {"Authorization": f"Bearer {create_access_token(str(ids['member_user']))}"}
     saved = client.put(
@@ -197,7 +260,9 @@ def test_membership_authorization_and_private_preferences(
     assert budget.json()["currency"] == "USD"
 
     owner_headers = {"Authorization": f"Bearer {create_access_token(str(ids['owner_user']))}"}
-    owner_preferences = client.get(f"/api/trips/{ids['trip']}/preferences/me", headers=owner_headers)
+    owner_preferences = client.get(
+        f"/api/trips/{ids['trip']}/preferences/me", headers=owner_headers
+    )
     assert owner_preferences.status_code == 404
 
     members = client.get(f"/api/trips/{ids['trip']}/members", headers=member_headers)
@@ -243,7 +308,7 @@ def test_removal_rejects_cross_trip_target_and_voting_freeze(
     ):
         response = client.put(
             f"/api/trips/{ids['trip']}/{path}",
-        headers=owner_headers,
+            headers=owner_headers,
             json=payload,
         )
         assert response.status_code == 409
