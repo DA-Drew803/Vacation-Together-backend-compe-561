@@ -86,9 +86,9 @@ class DestinationCandidate(Base):
     )
 
     trip_id: Mapped[uuid.UUID] = mapped_column(
-    Uuid,
-    nullable=False,
-    index=True,
+        Uuid,
+        nullable=False,
+        index=True,
     )
 
     destination_id: Mapped[uuid.UUID] = mapped_column(
@@ -155,9 +155,9 @@ class DestinationVote(Base):
     __tablename__ = "destination_votes"
     __table_args__ = (
         UniqueConstraint(
+            "trip_id",
             "trip_member_id",
-            "destination_candidate_id",
-            name="uq_destination_vote_member_candidate",
+            name="uq_destination_vote_member_trip",
         ),
     )
 
@@ -168,9 +168,15 @@ class DestinationVote(Base):
     )
 
     trip_member_id: Mapped[uuid.UUID] = mapped_column(
-    Uuid,
-    nullable=False,
-    index=True,
+        Uuid,
+        nullable=False,
+        index=True,
+    )
+
+    trip_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        nullable=False,
+        index=True,
     )
 
     destination_candidate_id: Mapped[uuid.UUID] = mapped_column(
@@ -189,3 +195,20 @@ class DestinationVote(Base):
     candidate: Mapped["DestinationCandidate"] = relationship(
         back_populates="votes",
     )
+
+
+class DestinationVotingState(Base):
+    """Frozen voting inputs and the deterministic result for one trip."""
+
+    __tablename__ = "destination_voting_states"
+
+    trip_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
+    frozen_member_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    frozen_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    selected_candidate_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    closed_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

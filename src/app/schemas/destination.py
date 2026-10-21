@@ -71,4 +71,10 @@ class VoteBallot(BaseModel):
 
 
 class VoteBallotUpdateRequest(BaseModel):
-    selections: list[DestinationVoteSelection]
+    selections: list[DestinationVoteSelection] = Field(min_length=1, max_length=1)
+
+
+class VotingStateResponse(BaseModel):
+    trip_id: uuid.UUID
+    status: Literal["OPEN", "CLOSED"]
+    selected_candidate_id: uuid.UUID | None = None
