@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,6 +18,10 @@ class Trip(Base):
         CheckConstraint(
             "state IN ('PLANNING', 'VOTING', 'CLOSED', 'FINALIZED')",
             name="ck_trip_state",
+        ),
+        CheckConstraint(
+            "transportation_preference IN ('AUTO', 'FLIGHT', 'ROAD_TRIP')",
+            name="ck_trip_transportation_preference",
         ),
     )
 
@@ -52,4 +56,25 @@ class Trip(Base):
     voting_closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
+    )
+
+    selected_start_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    selected_end_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    departure_location: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+
+    transportation_preference: Mapped[str] = mapped_column(
+        String(20),
+        default="AUTO",
+        nullable=False,
     )

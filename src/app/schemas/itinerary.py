@@ -115,6 +115,13 @@ class ItineraryItemMetadata(BaseModel):
     intensity: str = "UNKNOWN"
 
 
+class TransportationPlan(BaseModel):
+    mode: Literal["FLIGHT", "ROAD_TRIP"]
+    estimated_cost_per_person: float | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    reason: str | None = Field(default=None, max_length=500)
+
+
 class TripContext(BaseModel):
     trip_id: str
     selected_destination_id: str
@@ -129,6 +136,7 @@ class TripContext(BaseModel):
     pace: str | None = None
     mobility_preference: str | None = None
     weather: list[WeatherDay] | None = None
+    transportation: TransportationPlan | None = None
 
     @model_validator(mode="after")
     def reject_duplicate_weather_dates(self) -> "TripContext":
