@@ -1,7 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import CheckConstraint, Date, DateTime, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -51,5 +51,15 @@ class Trip(Base):
 
     voting_closed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+
+    selected_start_date: Mapped[date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    selected_end_date: Mapped[date | None] = mapped_column(
+        Date,
         nullable=True,
     )
