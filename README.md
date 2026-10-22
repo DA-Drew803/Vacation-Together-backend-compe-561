@@ -25,11 +25,10 @@ docker-compose.yml
 src/
 └── app/
     ├── main.py
-    ├── api/v1/        # API router setup
-    ├── core/          # settings, auth, database, dependencies
+    ├── core/          # security, database, dependencies
     ├── models/        # SQLAlchemy models
     ├── repository/    # database access functions
-    ├── routes/        # FastAPI endpoint modules
+    ├── routers/       # FastAPI endpoint modules
     ├── schemas/       # Pydantic request/response schemas
     └── services/      # business logic
 tests/                 # pytest tests
@@ -65,6 +64,8 @@ uv run pre-commit run --all-files
 cp .env.example .env
 uv run dev
 ```
+
+Set `FRONTEND_ORIGINS` in `.env` to the comma-separated frontend origins allowed by CORS, for example `http://localhost:3000`.
 
 Open:
 
