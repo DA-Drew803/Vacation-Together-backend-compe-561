@@ -31,7 +31,14 @@ class Destination(Base):
     name: Mapped[str] = mapped_column(
         String,
         nullable=False,
+        unique=True,
     )
+
+    location: Mapped[str] = mapped_column(String, nullable=False, default="")
+    baseline_cost: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("0.00")
+    )
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
     country_code: Mapped[str | None] = mapped_column(
         String(2),
@@ -205,12 +212,16 @@ class DestinationVotingState(Base):
 
     __tablename__ = "destination_voting_states"
 
-    trip_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    trip_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("trips.id"), primary_key=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="OPEN")
     frozen_member_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     frozen_candidate_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    selected_candidate_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
-    closed_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    selected_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("destination_candidates.id"), nullable=True
+    )
+    closed_by_member_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("trip_members.id"), nullable=True
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

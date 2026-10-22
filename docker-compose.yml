@@ -4,7 +4,11 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql+psycopg://vacation_user:vacation_password@db:5432/vacation_together
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      OPENAI_TIMEOUT_SECONDS: ${OPENAI_TIMEOUT_SECONDS}
     depends_on:
       db:
         condition: service_healthy
@@ -14,13 +18,13 @@ services:
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_DB: vacation_together
-      POSTGRES_USER: vacation_user
-      POSTGRES_PASSWORD: vacation_password
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - postgres_18_data:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vacation_user -d vacation_together"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 5

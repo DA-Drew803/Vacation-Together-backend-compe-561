@@ -13,6 +13,9 @@ from app.schemas.member import (
     BudgetRead,
     BudgetUpdate,
     DateRange,
+    GroupAvailability,
+    GroupBudget,
+    GroupMatch,
     MemberRead,
     PreferenceRead,
     PreferenceUpdate,
@@ -24,6 +27,29 @@ router = APIRouter(prefix="/trips/{trip_id}", tags=["members"])
 SessionDep = Annotated[Session, Depends(get_db)]
 CurrentMembershipDep = Annotated[TripMember, Depends(get_current_trip_member)]
 OwnerMembershipDep = Annotated[TripMember, Depends(require_trip_owner)]
+
+
+@router.get("/group_match", response_model=GroupMatch)
+def get_group_match(
+    trip_id: UUID,
+    db: SessionDep,
+    current_membership: CurrentMembershipDep,
+) -> GroupMatch:
+    del current_membership
+    try:
+        match = member_service.get_group_match(db, trip_id)
+    except member_service.MemberConflictError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return GroupMatch(
+        common_date_ranges=GroupAvailability(
+            ranges=[DateRange(start_date=match["start_date"], end_date=match["end_date"])],
+        ),
+        group_max_budget=GroupBudget(
+            max_amount=match["budget_amount"],
+            currency=match["currency"],
+        ),
+        interests=match["interests"],
+    )
 
 
 # Return the active members for a trip.

@@ -116,6 +116,7 @@ class MemberAvailability(Base):
 
 class MemberBudget(Base):
     __tablename__ = "member_budgets"
+    __table_args__ = (CheckConstraint("max_amount > 0", name="ck_member_budget_positive"),)
 
     trip_member_id: Mapped[UUID] = mapped_column(ForeignKey("trip_members.id"), primary_key=True)
     max_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)

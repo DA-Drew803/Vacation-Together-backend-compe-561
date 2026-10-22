@@ -42,8 +42,8 @@ def create_invitation(
         inviter_id=current_user.id,
         invitee_email=invitation_data.invitee_email,
     )
-    response = InvitationCreateResponse.model_validate(invitation)
-    return response.model_copy(update={"token": raw_token})
+    response = InvitationResponse.model_validate(invitation)
+    return InvitationCreateResponse(**response.model_dump(), token=raw_token)
 
 
 @router.get(

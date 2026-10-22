@@ -17,12 +17,16 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.dependencies import get_current_member_id, get_trip_context
 from app.main import app
+from app.models.destination import Destination
 from app.models.itinerary import (
     Itinerary,
     ItineraryApproval,
     ItineraryItem,
     ItineraryRevision,
 )
+from app.models.member import TripMember
+from app.models.trip import Trip
+from app.models.user import User
 from app.schemas.itinerary import (
     ApprovalInput,
     Budget,
@@ -100,7 +104,7 @@ def draft(*, changed: bool = False) -> ItineraryDraft:
 
 
 @pytest.fixture()
-def harness() -> Generator[Harness, None, None]:
+def harness(monkeypatch: pytest.MonkeyPatch) -> Generator[Harness, None, None]:
     test_database_url = getenv("TEST_DATABASE_URL")
     is_postgres = bool(test_database_url and test_database_url.startswith("postgresql"))
     if test_database_url:
@@ -140,6 +144,7 @@ def harness() -> Generator[Harness, None, None]:
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_trip_context] = override_trip_context
     app.dependency_overrides[get_current_member_id] = override_current_member
+    monkeypatch.setattr(itinerary_service, "run_revision_background", lambda *args: None)
     test_client = TestClient(app)
 
     yield Harness(test_client, testing_session, trip_context(uuid_for("unused")), is_postgres)
@@ -150,8 +155,58 @@ def harness() -> Generator[Harness, None, None]:
     test_engine.dispose()
 
 
+def seed_reference_rows(db: Session, trip_id: str) -> None:
+    destination_id = UUID(DESTINATION_ID)
+    trip_uuid = UUID(trip_id)
+    if db.get(Destination, destination_id) is None:
+        db.add(
+            Destination(
+                id=destination_id,
+                name="Test City",
+                location="Test Location",
+                baseline_cost=Decimal("500.00"),
+                tags=["food", "museums"],
+            )
+        )
+    if db.get(Trip, trip_uuid) is None:
+        db.add(Trip(id=trip_uuid, name="Test Trip"))
+    db.flush()
+    member_ids = (MEMBER_1, MEMBER_2, MEMBER_3, MEMBER_INELIGIBLE)
+    user_ids = {
+        member_id: uuid5(NAMESPACE_URL, f"vacation-together:user:{member_id}")
+        for member_id in member_ids
+    }
+    for index, member_id in enumerate(member_ids, start=1):
+        user_id = user_ids[member_id]
+        if db.get(User, user_id) is None:
+            db.add(
+                User(
+                    id=user_id,
+                    email=f"{member_id}@example.com",
+                    display_name=f"Member {index}",
+                    password_hash="test",
+                )
+            )
+    db.flush()
+    for index, member_id in enumerate(member_ids, start=1):
+        user_id = user_ids[member_id]
+        if db.get(TripMember, UUID(member_id)) is None:
+            db.add(
+                TripMember(
+                    id=UUID(member_id),
+                    trip_id=trip_uuid,
+                    user_id=user_id,
+                    role="OWNER" if index == 1 else "MEMBER",
+                    voting_eligible=member_id != MEMBER_INELIGIBLE,
+                )
+            )
+    db.flush()
+
+
 def seed_itinerary(harness: Harness, trip_id: str) -> None:
     with harness.session_factory() as db:
+        seed_reference_rows(db, trip_id)
+        db.commit()
         itinerary_service.generate_itinerary_for_selected_destination(
             db,
             trip_context(trip_id),
@@ -190,7 +245,7 @@ def test_uml_owned_column_types_and_openapi_contract() -> None:
         ItineraryRevision.__table__.c.requested_by_member_id,
         ItineraryApproval.__table__.c.trip_member_id,
     )
-    assert all(not column.foreign_keys for column in external_references)
+    assert all(column.foreign_keys for column in external_references)
     assert set(ItineraryApproval.__table__.primary_key.columns) == {
         ItineraryApproval.__table__.c.itinerary_id,
         ItineraryApproval.__table__.c.trip_member_id,
@@ -245,6 +300,8 @@ def test_get_missing_itinerary_has_no_generation_side_effect(harness: Harness) -
 def test_initial_generation_persists_items_and_prevents_duplicate(harness: Harness) -> None:
     trip_id = uuid_for("trip-generation")
     with harness.session_factory() as db:
+        seed_reference_rows(db, trip_id)
+        db.commit()
         first = itinerary_service.generate_itinerary_for_selected_destination(
             db,
             trip_context(trip_id),
@@ -285,7 +342,7 @@ def test_changed_revision_increments_once_and_resets_approvals(harness: Harness)
     )
     assert started.status_code == 202
     assert started.json()["status"] == "RUNNING"
-    assert started.json()["base_version"] == 1
+    assert started.json()["requested_version"] == 1
 
     with harness.session_factory() as db:
         completed = itinerary_service.complete_revision(
@@ -496,7 +553,7 @@ def test_production_identity_dependency_cannot_be_bypassed_by_header(
     finally:
         app.dependency_overrides[get_current_member_id] = override
 
-    assert response.status_code == 503
+    assert response.status_code == 401
 
 
 def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None:
@@ -511,6 +568,11 @@ def test_postgresql_concurrent_revisions_and_approvals(harness: Harness) -> None
                 draft(),
             )
             return str(itinerary.id)
+
+    with harness.session_factory() as db:
+        trip_id = UUID(uuid_for("trip-concurrent-generation"))
+        seed_reference_rows(db, str(trip_id))
+        db.commit()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         generated_ids = list(executor.map(lambda _: generate(), range(2)))

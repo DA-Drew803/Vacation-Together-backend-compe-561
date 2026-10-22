@@ -38,9 +38,8 @@ class RevisionInput(BaseModel):
 
 class Revision(BaseModel):
     id: UUID
-    instruction: str
     status: RevisionStatus
-    base_version: int
+    requested_version: int
 
 
 class ApprovalInput(BaseModel):

@@ -17,8 +17,6 @@ class EstimatedCost(BaseModel):
 
 WeatherDataType = Literal[
     "forecast",
-    "historical_average",
-    "seasonal_average",
     "unavailable",
 ]
 
@@ -82,3 +80,30 @@ class VotingStateResponse(BaseModel):
 
 class CloseVotingRequest(BaseModel):
     selected_candidate_id: uuid.UUID | None = None
+
+
+class CandidateResponse(BaseModel):
+    id: uuid.UUID
+    destination_id: uuid.UUID
+    name: str
+    match_score: float = Field(ge=0, le=1)
+    estimated_cost: EstimatedCost
+    weather: dict | None = None
+    reason: str
+
+
+class VoteInput(BaseModel):
+    candidate_id: uuid.UUID
+
+
+class VoteResponse(BaseModel):
+    candidate_id: uuid.UUID | None = None
+    member_id: uuid.UUID
+
+
+class VotingProgress(BaseModel):
+    status: Literal["NOT_STARTED", "OPEN", "CLOSED"]
+    eligible_count: int
+    voted_count: int
+    selected_destination_id: uuid.UUID | None = None
+    tallies: dict[str, int]
