@@ -180,7 +180,7 @@ def finish_voting(
 ) -> dict:
     try:
         del request
-        state = _close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
+        state = close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
         return {
             "trip_id": state.trip_id,
             "status": state.status,
@@ -198,13 +198,13 @@ def close_votes(
     provider: Annotated[OpenAIItineraryProvider | None, Depends(get_itinerary_provider)],
 ) -> dict:
     try:
-        _close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
+        close_voting_and_trigger_itinerary(db, trip_id, current_member.id, provider)
         return destination_service.get_voting_progress(db, trip_id)
     except DestinationInvalidError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
 
 
-def _close_voting_and_trigger_itinerary(
+def close_voting_and_trigger_itinerary(
     db: Session,
     trip_id: uuid.UUID,
     member_id: uuid.UUID,

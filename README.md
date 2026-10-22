@@ -111,3 +111,15 @@ With coverage:
 ```bash
 uv run pytest --cov=app --cov-report=term-missing
 ```
+
+## Live AI Full-Workflow Test
+
+```env
+OPENAI_API_KEY=your_key_here
+OPENAI_MODEL=gpt-6-luna
+OPENAI_TIMEOUT_SECONDS=60
+```
+
+```bash
+OPENAI_LIVE_TEST=1 DATABASE_URL=sqlite:// uv run pytest -s -q tests/test_live_ai_workflow.py
+```
