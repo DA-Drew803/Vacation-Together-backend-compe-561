@@ -11,6 +11,7 @@ def new_id() -> UUID:
     return uuid4()
 
 
+# Store trip data in the database.
 class Trip(Base):
     __tablename__ = "trips"
 
