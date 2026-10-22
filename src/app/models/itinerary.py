@@ -23,6 +23,7 @@ def new_id() -> UUID:
     return uuid4()
 
 
+# Store itinerary data in the database.
 class Itinerary(Base):
     __tablename__ = "itineraries"
     __table_args__ = (
@@ -59,6 +60,7 @@ class Itinerary(Base):
     )
 
 
+# Store itinerary item data in the database.
 class ItineraryItem(Base):
     __tablename__ = "itinerary_items"
     __table_args__ = (
@@ -86,6 +88,7 @@ class ItineraryItem(Base):
     itinerary: Mapped[Itinerary] = relationship(back_populates="items")
 
 
+# Store itinerary revision data in the database.
 class ItineraryRevision(Base):
     __tablename__ = "itinerary_revisions"
     __table_args__ = (
@@ -114,6 +117,7 @@ class ItineraryRevision(Base):
     itinerary: Mapped[Itinerary] = relationship(back_populates="revisions")
 
 
+# Store itinerary approval data in the database.
 class ItineraryApproval(Base):
     __tablename__ = "itinerary_approvals"
     __table_args__ = (

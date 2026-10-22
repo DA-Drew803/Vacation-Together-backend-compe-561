@@ -15,6 +15,7 @@ def invitation_expiration() -> datetime:
     return datetime.now(UTC) + timedelta(days=7)
 
 
+# Store invitation data in the database.
 class Invitation(Base):
     __tablename__ = "invitations"
 

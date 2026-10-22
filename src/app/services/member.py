@@ -47,7 +47,6 @@ def require_active_member(
     return member
 
 
-# Get the active members for a trip.
 def list_members(
     db: Session,
     trip_id: UUID,
@@ -234,7 +233,6 @@ def set_budget(
     return member, budget
 
 
-# Get the current member's preferences.
 def get_preferences(
     db: Session,
     trip_id: UUID,

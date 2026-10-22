@@ -38,7 +38,6 @@ def get_trip_member_by_user(
     )
 
 
-# Get all active members in a trip.
 def list_active_members(
     db: Session,
     trip_id: UUID,
@@ -80,12 +79,10 @@ def get_active_member_by_id(
     )
 
 
-# Get a member's preferences.
 def get_preference(db: Session, trip_member_id: UUID) -> MemberPreference | None:
     return db.get(MemberPreference, trip_member_id)
 
 
-# Save a member's preferences.
 def save_preference(db: Session, preference: MemberPreference) -> None:
     db.add(preference)
 

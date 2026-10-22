@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
+# Store destination data in the database.
 class Destination(Base):
     __tablename__ = "destinations"
 
@@ -73,6 +74,7 @@ class Destination(Base):
     )
 
 
+# Store destination candidate data in the database.
 class DestinationCandidate(Base):
     __tablename__ = "destination_candidates"
     __table_args__ = (
@@ -159,6 +161,7 @@ class DestinationCandidate(Base):
     )
 
 
+# Store destination vote data in the database.
 class DestinationVote(Base):
     __tablename__ = "destination_votes"
     __table_args__ = (
@@ -207,6 +210,7 @@ class DestinationVote(Base):
     )
 
 
+# Store destination voting state data in the database.
 class DestinationVotingState(Base):
     """Frozen voting inputs and the deterministic result for one trip."""
 

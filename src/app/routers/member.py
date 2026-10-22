@@ -77,7 +77,6 @@ def get_members(
     ]
 
 
-# Remove a member from a trip.
 @router.delete("/members/{member_id}")
 def remove_member(
     trip_id: UUID,
@@ -188,7 +187,6 @@ def get_my_preferences(
     )
 
 
-# Update the current member's preferences.
 @router.put("/preferences/me", response_model=PreferenceRead)
 def update_my_preferences(
     trip_id: UUID,
