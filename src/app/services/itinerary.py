@@ -29,6 +29,7 @@ from app.schemas.itinerary import (
     ItineraryDraft,
     ItineraryItemInput,
     RevisionInput,
+    TransportationPlan,
     TripContext,
     WeatherDay,
 )
@@ -91,16 +92,23 @@ def build_trip_context(db: Session, trip_id: str | UUID) -> TripContext:
                 )
                 for item in snapshot.get("days", [])
             ]
+    start_date = trip.selected_start_date or match["start_date"]
+    end_date = trip.selected_end_date or match["end_date"]
+    transportation = None
+    if trip.transportation_preference != "AUTO":
+        transportation = TransportationPlan(mode=trip.transportation_preference)
+
     return TripContext(
         trip_id=str(trip.id),
         selected_destination_id=str(destination.id),
         destination_name=destination.name,
-        start_date=match["start_date"].isoformat(),
-        end_date=match["end_date"].isoformat(),
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
         budget=Budget(max_amount=float(match["budget_amount"]), currency=match["currency"]),
         eligible_members=eligible_members,
         interests=match["interests"],
         weather=weather,
+        transportation=transportation,
     )
 
 

@@ -19,6 +19,10 @@ class Trip(Base):
             "state IN ('PLANNING', 'VOTING', 'CLOSED', 'FINALIZED')",
             name="ck_trip_state",
         ),
+        CheckConstraint(
+            "transportation_preference IN ('AUTO', 'FLIGHT', 'ROAD_TRIP')",
+            name="ck_trip_transportation_preference",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(
@@ -62,4 +66,15 @@ class Trip(Base):
     selected_end_date: Mapped[date | None] = mapped_column(
         Date,
         nullable=True,
+    )
+
+    departure_location: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+
+    transportation_preference: Mapped[str] = mapped_column(
+        String(20),
+        default="AUTO",
+        nullable=False,
     )

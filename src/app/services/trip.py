@@ -63,6 +63,19 @@ def set_selected_dates(
     return trip
 
 
+def set_travel_details(
+    db: Session,
+    trip: Trip,
+    departure_location: str | None,
+    transportation_preference: str,
+) -> Trip:
+    trip.departure_location = departure_location
+    trip.transportation_preference = transportation_preference
+    db.commit()
+    db.refresh(trip)
+    return trip
+
+
 def delete_trip(db: Session, trip: Trip) -> None:
     db.delete(trip)
     db.commit()

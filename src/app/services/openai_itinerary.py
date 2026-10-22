@@ -143,6 +143,7 @@ class ItineraryRevisionProvider(Protocol):
 
 class CostCategory(StrEnum):
     FLIGHTS = "flights"
+    ROAD_TRIP = "road_trip"
     LODGING = "lodging"
     FOOD = "food"
     LOCAL_TRANSPORT = "local_transport"
@@ -240,9 +241,13 @@ preferences, travel preferences, pace, mobility preference, weather, and constra
 the application. Weather is optional: when it is unavailable, do not invent weather conditions.
 All estimated costs use the PER_PERSON basis. For shared costs such as lodging or local transport,
 return the estimated share for one traveler. Include at least one cost line for every required
-category: flights, lodging, food, local_transport, and activities. Organize every cost line by
+category supplied by the application, plus lodging, food, local_transport, and activities. Organize every cost line by
 travel day, with at least one line on every day. Day numbers start at 1 and cover only the supplied
-date range. Positions must be sequential from 1 within each day. Use integer cents and make
+date range. Positions must be sequential from 1 within each day. Aim for morning, afternoon, and evening
+activities each day, but include rest periods when appropriate. When the budget is constrained, prioritize
+free or low-cost activities such as parks, beaches, walks, viewpoints, public spaces, and self-guided
+exploration. A free activity may have an estimated cost of zero. Do not invent paid activities merely to
+fill the schedule. Use integer cents and make
 estimated_total_cost_cents equal the exact sum of all line-item costs. Keep that total at or below
 the limiting per-person budget.
 
@@ -331,6 +336,23 @@ class OpenAIItineraryProvider:
         travel_days, budget_cents, currency, destination_name, group_size = validate_context(
             context
         )
+        transportation_mode = context.transportation.mode if context.transportation else None
+        required_categories = required_cost_categories(transportation_mode)
+        constraints = [
+            "Keep the selected destination unchanged.",
+            "Treat all costs as unverified per-person planning estimates.",
+            "Represent shared costs as the estimated share for one traveler.",
+            "Do not make voting, authorization, approval, or membership decisions.",
+        ]
+        if transportation_mode == "ROAD_TRIP":
+            constraints.append(
+                "Use a road trip for long-distance transportation; do not include flights."
+            )
+        elif transportation_mode == "FLIGHT":
+            constraints.append(
+                "Use flights for long-distance transportation; do not include road-trip costs."
+            )
+
         request_context = {
             "selected_destination": destination_name,
             "travel_dates": {
@@ -345,13 +367,11 @@ class OpenAIItineraryProvider:
             "group_size": group_size,
             "interests": normalize_interests(context.interests),
             **preference_payload(context),
-            "required_cost_categories": [category.value for category in CostCategory],
-            "constraints": [
-                "Keep the selected destination unchanged.",
-                "Treat all costs as unverified per-person planning estimates.",
-                "Represent shared costs as the estimated share for one traveler.",
-                "Do not make voting, authorization, approval, or membership decisions.",
-            ],
+            "transportation": context.transportation.model_dump()
+            if context.transportation
+            else None,
+            "required_cost_categories": [category.value for category in required_categories],
+            "constraints": constraints,
         }
 
         try:
@@ -380,7 +400,7 @@ class OpenAIItineraryProvider:
                 "OpenAI returned an incomplete or invalid itinerary"
             ) from error
 
-        validate_output(parsed, travel_days, budget_cents, currency)
+        validate_output(parsed, travel_days, budget_cents, currency, transportation_mode)
         validate_identity(
             parsed.destination_name,
             parsed.start_date,
@@ -659,11 +679,21 @@ def validate_identity(
         )
 
 
+def required_cost_categories(transportation_mode: str | None) -> set[CostCategory]:
+    categories = set(CostCategory)
+    if transportation_mode == "ROAD_TRIP":
+        categories.remove(CostCategory.FLIGHTS)
+    else:
+        categories.remove(CostCategory.ROAD_TRIP)
+    return categories
+
+
 def validate_output(
     draft: GeneratedItineraryDraft,
     travel_days: int,
     budget_cents: int,
     currency: str,
+    transportation_mode: str | None = None,
 ) -> None:
     if draft.currency.upper() != currency:
         raise ItineraryProviderResponseError("Itinerary currency does not match the trip budget")
@@ -676,9 +706,13 @@ def validate_output(
         )
 
     actual_categories = {item.category for item in draft.items}
-    if actual_categories != set(CostCategory):
+    if actual_categories != required_cost_categories(transportation_mode):
+        if transportation_mode != "ROAD_TRIP":
+            raise ItineraryProviderResponseError(
+                "Itinerary must account for flights, lodging, food, local transport, and activities"
+            )
         raise ItineraryProviderResponseError(
-            "Itinerary must account for flights, lodging, food, local transport, and activities"
+            "Itinerary must account for road-trip transportation, lodging, food, local transport, and activities"
         )
 
     items_by_day: dict[int, list[GeneratedItineraryItem]] = {}

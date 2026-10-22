@@ -1,7 +1,10 @@
 from datetime import date, datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+TransportationPreference = Literal["AUTO", "FLIGHT", "ROAD_TRIP"]
 
 
 class TripCreate(BaseModel):
@@ -29,6 +32,11 @@ class TripDatesUpdate(BaseModel):
         return self
 
 
+class TripTravelDetailsUpdate(BaseModel):
+    departure_location: str | None = Field(default=None, min_length=1, max_length=200)
+    transportation_preference: TransportationPreference = "AUTO"
+
+
 class TripResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -40,3 +48,5 @@ class TripResponse(BaseModel):
     voting_closed_at: datetime | None
     selected_start_date: date | None
     selected_end_date: date | None
+    departure_location: str | None
+    transportation_preference: TransportationPreference
