@@ -21,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
+# Store trip member data in the database.
 class TripMember(Base):
     __tablename__ = "trip_members"
 
@@ -98,6 +99,7 @@ class TripMember(Base):
     )
 
 
+# Store member availability data in the database.
 class MemberAvailability(Base):
     __tablename__ = "member_availability"
     __table_args__ = (
@@ -114,6 +116,7 @@ class MemberAvailability(Base):
     trip_member: Mapped[TripMember] = relationship(back_populates="availabilities")
 
 
+# Store member budget data in the database.
 class MemberBudget(Base):
     __tablename__ = "member_budgets"
     __table_args__ = (CheckConstraint("max_amount > 0", name="ck_member_budget_positive"),)
@@ -125,6 +128,7 @@ class MemberBudget(Base):
     trip_member: Mapped[TripMember] = relationship(back_populates="budget")
 
 
+# Store member preference data in the database.
 class MemberPreference(Base):
     __tablename__ = "member_preferences"
 
