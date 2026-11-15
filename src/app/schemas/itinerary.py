@@ -69,11 +69,19 @@ class Approval(BaseModel):
     approved: bool
 
 
+class ApprovalMember(BaseModel):
+    member_id: str
+    display_name: str
+    approved: bool
+
+
 class ApprovalProgress(BaseModel):
     version: int
     approved_count: int
     eligible_count: int
     finalized: bool
+    members: list[ApprovalMember] = Field(default_factory=list)
+    current_member_id: str | None = None
 
 
 class EligibleMember(BaseModel):

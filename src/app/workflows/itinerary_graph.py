@@ -15,6 +15,8 @@ from app.services.openai_itinerary import (
     ItineraryProviderResponseError,
     ItineraryRevisionProvider,
     ItineraryRevisionUnsupportedError,
+    RevisionIntent,
+    parse_revision_intent,
 )
 
 MAX_GRAPH_ATTEMPTS = 2
@@ -38,6 +40,7 @@ class ItineraryGraphState(TypedDict, total=False):
     result: ItineraryDraft
     error: str
     error_exception: Exception
+    interpreted_revision: RevisionIntent
 
 
 def _prepare(state: ItineraryGraphState) -> ItineraryGraphState:
@@ -77,7 +80,7 @@ def _invoke_provider(state: ItineraryGraphState) -> ItineraryGraphState:
             result = cast(ItineraryDraftProvider, provider).generate(context)
         else:
             revision_provider = cast(ItineraryRevisionProvider, provider)
-            revise_kwargs: dict[str, bool] = {}
+            revise_kwargs: dict[str, object] = {}
             if (
                 "allow_persisted_metadata_revisions"
                 in signature(revision_provider.revise).parameters
@@ -85,6 +88,8 @@ def _invoke_provider(state: ItineraryGraphState) -> ItineraryGraphState:
                 revise_kwargs["allow_persisted_metadata_revisions"] = state.get(
                     "allow_persisted_metadata_revisions", False
                 )
+            if "interpreted_intent" in signature(revision_provider.revise).parameters:
+                revise_kwargs["interpreted_intent"] = state["interpreted_revision"]
             result = revision_provider.revise(
                 context,
                 state["current"],
@@ -139,6 +144,20 @@ def _finish(state: ItineraryGraphState) -> ItineraryGraphState:
     return state
 
 
+def _interpret_revision(state: ItineraryGraphState) -> ItineraryGraphState:
+    logger.info(
+        "itinerary_graph node=interpret_revision target_day=%s",
+        state.get("interpreted_revision").target_day if state.get("interpreted_revision") else None,
+    )
+    context = state["context"]
+    intent = parse_revision_intent(state["instruction"], context.interests)
+    return {**state, "interpreted_revision": intent}
+
+
+def _after_prepare(state: ItineraryGraphState) -> Literal["interpret_revision", "invoke_provider"]:
+    return "interpret_revision" if state.get("operation") == "revise" else "invoke_provider"
+
+
 def _fail(state: ItineraryGraphState) -> ItineraryGraphState:
     logger.info(
         "itinerary_graph node=fail operation=%s attempt=%s",
@@ -157,11 +176,20 @@ def _fail(state: ItineraryGraphState) -> ItineraryGraphState:
 def _build_graph():
     graph = StateGraph(ItineraryGraphState)
     graph.add_node("prepare", _prepare)
+    graph.add_node("interpret_revision", _interpret_revision)
     graph.add_node("invoke_provider", _invoke_provider)
     graph.add_node("finish", _finish)
     graph.add_node("fail", _fail)
     graph.add_edge(START, "prepare")
-    graph.add_edge("prepare", "invoke_provider")
+    graph.add_conditional_edges(
+        "prepare",
+        _after_prepare,
+        {
+            "interpret_revision": "interpret_revision",
+            "invoke_provider": "invoke_provider",
+        },
+    )
+    graph.add_edge("interpret_revision", "invoke_provider")
     graph.add_conditional_edges(
         "invoke_provider",
         _next_step,

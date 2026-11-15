@@ -166,6 +166,8 @@ class RevisionIntent:
     target_day: int | None = None
     target_text: str | None = None
     replacement_text: str | None = None
+    situational_constraints: tuple[str, ...] = ()
+    preserve_unrelated_days: bool = False
 
 
 class RevisionTarget(BaseModel):
@@ -263,12 +265,20 @@ selected destination or supplied dates.
 
 
 REVISION_SYSTEM_INSTRUCTIONS = """Interpret the free-form revision instruction against the
-structured trip context and current itinerary. Return operation COST_ONLY for budget-only changes
+structured trip context and current itinerary. Translate ordinary situational language into
+travel-planning constraints without diagnosing illness or making medical recommendations. For
+example, an unwell or exhausted traveler can imply low physical effort, minimal walking, easy
+access, seating/rest, and a relaxed pace; rain can imply an indoor or weather-protected option;
+limited time before a flight can imply a short, nearby activity. Treat these as planning preferences,
+not medical safety judgments. If the user explicitly names a day, change only that day and preserve
+all unrelated days unless the request clearly asks for a broader change.
+
+Return operation COST_ONLY for budget-only changes
 and SEMANTIC for preference, food, pace, mobility, weather, or activity-content changes. For
 COST_ONLY, preserve every item's day, position, title, and item count; only costs may change. For
-SEMANTIC, you may rebalance or replace itinerary content only when the current items contain
-trusted metadata, and every returned item must contain trusted metadata too. Never infer metadata
-from position or title prefixes.
+SEMANTIC, you may rebalance or replace itinerary content even when a legacy current item has no
+persisted metadata, but every returned item must contain validated trusted metadata. Never infer
+metadata from position or title prefixes.
 
 Always preserve the selected destination and supplied dates. All costs use the PER_PERSON basis;
 shared costs must be represented as one traveler's estimated share. Keep every day in the supplied
@@ -434,6 +444,7 @@ class OpenAIItineraryProvider:
         instruction: str,
         *,
         allow_persisted_metadata_revisions: bool = False,
+        interpreted_intent: RevisionIntent | None = None,
     ) -> ItineraryDraft:
         travel_days, budget_cents, currency, destination_name, group_size = validate_context(
             context
@@ -441,7 +452,9 @@ class OpenAIItineraryProvider:
         if current_version < 1:
             raise ItineraryProviderInputError("Current itinerary version must be positive")
         normalized_instruction = normalize_revision_instruction(instruction)
-        intent = parse_revision_intent(normalized_instruction, context.interests)
+        intent = interpreted_intent or parse_revision_intent(
+            normalized_instruction, context.interests
+        )
         current_items = serialize_current_draft(current)
         current_total_cents = amount_to_cents(
             current.estimated_total_cost,
@@ -496,6 +509,12 @@ class OpenAIItineraryProvider:
                 exclude_defaults=True,
             ),
             "revision_instruction": normalized_instruction,
+            "interpreted_revision": {
+                "target_day": intent.target_day,
+                "scope": "day" if intent.target_day is not None else "itinerary",
+                "situational_constraints": list(intent.situational_constraints),
+                "preserve_unrelated_days": intent.preserve_unrelated_days,
+            },
         }
 
         try:
@@ -832,15 +851,53 @@ def parse_revision_intent(instruction: str, interests: list[str]) -> RevisionInt
             "Multiple cost and replacement operations are not supported together"
         )
 
-    if re.search(r"\b(walking|physically demanding|mobility)\b", normalized):
-        return RevisionIntent(kind=RevisionIntentKind.SEMANTIC, target_text="walking")
-
     day_match = re.search(
         r"\b(?:day(?: number)?\s*(?P<number>\d{1,2})|the\s*(?P<ordinal>"
         + "|".join(re.escape(value) for value in ORDINAL_DAY_NUMBERS)
         + r")\s+day)\b",
         normalized,
     )
+    target_day = None
+    if day_match is not None:
+        target_day = (
+            int(day_match.group("number"))
+            if day_match.group("number")
+            else ORDINAL_DAY_NUMBERS[day_match.group("ordinal")]
+        )
+    situational_constraints: list[str] = []
+    if re.search(
+        r"\b(sick|ill|unwell|(?:not )?feeling well|tired|exhausted|parents?)\b", normalized
+    ):
+        situational_constraints.extend(
+            [
+                "low physical effort",
+                "minimal walking",
+                "easy access",
+                "seating or places to rest",
+                "quiet and relaxed pace",
+            ]
+        )
+    if re.search(r"\b(rain|raining|storm|bad weather|indoors?|indoor)\b", normalized):
+        situational_constraints.append("indoor or weather-protected")
+    if re.search(r"\b(relax\w*|quiet|slow|chill|rest)\b", normalized):
+        situational_constraints.append("relaxed activity with unstructured time")
+    if re.search(
+        r"\b(two hours|2 hours|an hour|one hour|before (?:our|the) flight|flight)\b", normalized
+    ):
+        situational_constraints.extend(["short duration", "nearby with minimal transfer time"])
+    if re.search(r"\b(spent too much|cheap|cheaper|budget|low[- ]cost|save money)\b", normalized):
+        situational_constraints.append("lower-cost option")
+    situational_constraints = list(dict.fromkeys(situational_constraints))
+    preserve_unrelated_days = target_day is not None
+
+    if re.search(r"\b(walking|physically demanding|mobility)\b", normalized):
+        return RevisionIntent(
+            kind=RevisionIntentKind.SEMANTIC,
+            target_day=target_day,
+            target_text="walking",
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
+        )
     cheaper = re.search(r"\b(cheaper|reduce|lower|less expensive)\b", normalized)
     semantic_markers = (
         "rain",
@@ -856,31 +913,62 @@ def parse_revision_intent(instruction: str, interests: list[str]) -> RevisionInt
         "art",
     )
     if cheaper is not None and any(marker in normalized for marker in semantic_markers):
-        return RevisionIntent(kind=RevisionIntentKind.SEMANTIC)
-    if day_match is not None and cheaper is not None and re.search(r"\bday\b", normalized):
-        day = (
-            int(day_match.group("number"))
-            if day_match.group("number")
-            else ORDINAL_DAY_NUMBERS[day_match.group("ordinal")]
+        return RevisionIntent(
+            kind=RevisionIntentKind.SEMANTIC,
+            target_day=target_day,
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
         )
-        if re.search(r"\b(cheaper|reduce|lower|less expensive)\b", normalized):
-            return RevisionIntent(kind=RevisionIntentKind.CHEAPER_DAY, target_day=day)
+    if (
+        day_match is not None
+        and cheaper is not None
+        and re.search(r"\bday\b", normalized)
+        and re.search(r"\b(cheaper|reduce|lower|less expensive)\b", normalized)
+    ):
+        return RevisionIntent(
+            kind=RevisionIntentKind.CHEAPER_DAY,
+            target_day=target_day,
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
+        )
     if re.search(r"\b(cost|costs|budget|cheaper|spend|price|under \$?\d)", normalized):
         target_text = None
         if re.search(r"\b(food|dining|meals|restaurants?)\b", normalized):
             target_text = CostCategory.FOOD.value
         elif re.search(r"\b(activities|activity|attractions?)\b", normalized):
             target_text = CostCategory.ACTIVITIES.value
-        return RevisionIntent(kind=RevisionIntentKind.COST_ONLY, target_text=target_text)
+        return RevisionIntent(
+            kind=RevisionIntentKind.COST_ONLY,
+            target_day=target_day,
+            target_text=target_text,
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
+        )
     if normalized.startswith("replace "):
         if re.search(r"\b(another|activity)\b", normalized):
             raise ItineraryRevisionUnsupportedError(
                 "An activity replacement must contain one clear replacement intent and is not supported"
             )
-        return RevisionIntent(kind=RevisionIntentKind.REPLACE_ACTIVITY)
+        return RevisionIntent(
+            kind=RevisionIntentKind.REPLACE_ACTIVITY,
+            target_day=target_day,
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
+        )
     if "activities" in normalized and "interest" in normalized:
-        return RevisionIntent(kind=RevisionIntentKind.SEMANTIC, target_text="interests")
-    return RevisionIntent(kind=RevisionIntentKind.SEMANTIC)
+        return RevisionIntent(
+            kind=RevisionIntentKind.SEMANTIC,
+            target_day=target_day,
+            target_text="interests",
+            situational_constraints=tuple(situational_constraints),
+            preserve_unrelated_days=preserve_unrelated_days,
+        )
+    return RevisionIntent(
+        kind=RevisionIntentKind.SEMANTIC,
+        target_day=target_day,
+        situational_constraints=tuple(situational_constraints),
+        preserve_unrelated_days=preserve_unrelated_days,
+    )
 
 
 def parse_day_reference(value: str) -> int:
@@ -989,6 +1077,12 @@ def validate_revision_intent_against_current(
     *,
     trusted_source: bool,
 ) -> None:
+    if intent.target_day is not None and not any(
+        item.day_number == intent.target_day for item in current.items
+    ):
+        raise ItineraryRevisionUnsupportedError(
+            "The requested revision day is not present in the itinerary"
+        )
     if intent.kind in {RevisionIntentKind.CHEAPER_DAY, RevisionIntentKind.COST_ONLY}:
         if intent.kind == RevisionIntentKind.CHEAPER_DAY and not any(
             item.day_number == intent.target_day for item in current.items
@@ -1007,29 +1101,8 @@ def validate_revision_intent_against_current(
             )
         return
     if intent.kind in {RevisionIntentKind.SEMANTIC, RevisionIntentKind.REPLACE_ACTIVITY}:
-        if not trusted_source:
-            raise ItineraryRevisionUnsupportedError(
-                "Semantic revisions require a provider-generated trusted draft"
-            )
-        if not current.items or any(not has_metadata(item) for item in current.items):
-            if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
-                raise ItineraryRevisionUnsupportedError(
-                    "Activity replacement requires trusted structured activity categories "
-                    "and is not supported"
-                )
-            if intent.target_text == "walking":
-                raise ItineraryRevisionUnsupportedError(
-                    "Walking reduction cannot be verified from the current itinerary fields "
-                    "and is not supported"
-                )
-            if intent.target_text == "interests":
-                raise ItineraryRevisionUnsupportedError(
-                    "Interest-alignment revisions require verifiable structured activity tags "
-                    "and are not supported"
-                )
-            raise ItineraryRevisionUnsupportedError(
-                "Semantic revisions require trusted structured itinerary metadata and are not supported"
-            )
+        if not current.items:
+            raise ItineraryRevisionUnsupportedError("The current itinerary has no activities")
         return
 
 
@@ -1293,6 +1366,18 @@ def validate_revision_output(
         )
     elif intent.kind in {RevisionIntentKind.SEMANTIC, RevisionIntentKind.REPLACE_ACTIVITY}:
         validate_semantic_revision(revised, current)
+        if intent.preserve_unrelated_days and intent.target_day is not None:
+            current_unrelated = [
+                item for item in current.items if item.day_number != intent.target_day
+            ]
+            revised_unrelated = [
+                item for item in revised.items if item.day_number != intent.target_day
+            ]
+            require_unchanged_items(
+                current_unrelated,
+                revised_unrelated,
+                "A day-specific revision must preserve all unrelated days",
+            )
         if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
             validate_activity_replacement(revised, current)
     return True

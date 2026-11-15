@@ -267,12 +267,14 @@ def read_approval_progress(
     trip_id: Annotated[str, Path()],
     db: Annotated[Session, Depends(get_db)],
     context: Annotated[TripContext, Depends(get_trip_context)],
+    current_member_id: Annotated[str, Depends(get_current_member_id)],
 ) -> ApprovalProgress:
     try:
-        return itinerary_service.get_approval_progress(
+        progress = itinerary_service.get_approval_progress(
             db,
             context.model_copy(update={"trip_id": trip_id}),
         )
+        return progress.model_copy(update={"current_member_id": current_member_id})
     except ItineraryConflictError as error:
         raise conflict_response(error) from error
     except ItineraryInvalidError as error:

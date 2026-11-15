@@ -655,12 +655,16 @@ def test_duplicate_approval_counts_once_and_partial_does_not_finalize(
     assert approve(harness, trip_id, MEMBER_1).status_code == 200
 
     progress = harness.client.get(f"/api/trips/{trip_id}/itinerary/approval").json()
-    assert progress == {
-        "version": 1,
-        "approved_count": 1,
-        "eligible_count": 3,
-        "finalized": False,
+    assert progress["version"] == 1
+    assert progress["approved_count"] == 1
+    assert progress["eligible_count"] == 3
+    assert progress["finalized"] is False
+    assert {member["display_name"] for member in progress["members"]} == {
+        "Member One",
+        "Member Two",
+        "Member Three",
     }
+    assert sum(member["approved"] for member in progress["members"]) == 1
 
 
 def test_unanimous_approval_finalizes_and_blocks_revision(harness: Harness) -> None:
@@ -687,12 +691,11 @@ def test_two_of_three_approvals_remain_draft(harness: Harness) -> None:
     assert approve(harness, trip_id, MEMBER_2).status_code == 200
 
     progress = harness.client.get(f"/api/trips/{trip_id}/itinerary/approval").json()
-    assert progress == {
-        "version": 1,
-        "approved_count": 2,
-        "eligible_count": 3,
-        "finalized": False,
-    }
+    assert progress["version"] == 1
+    assert progress["approved_count"] == 2
+    assert progress["eligible_count"] == 3
+    assert progress["finalized"] is False
+    assert sum(member["approved"] for member in progress["members"]) == 2
     assert harness.client.get(f"/api/trips/{trip_id}/itinerary").json()["status"] == "DRAFT"
 
 
