@@ -103,6 +103,30 @@ def draft(*, changed: bool = False) -> ItineraryDraft:
     )
 
 
+def multi_day_draft() -> ItineraryDraft:
+    return ItineraryDraft(
+        items=[
+            ItineraryItemInput(day_number=1, position=1, title="A", estimated_cost=20),
+            ItineraryItemInput(day_number=1, position=2, title="B", estimated_cost=20),
+            ItineraryItemInput(day_number=1, position=3, title="C", estimated_cost=20),
+            ItineraryItemInput(day_number=2, position=1, title="D", estimated_cost=20),
+            ItineraryItemInput(day_number=2, position=2, title="E", estimated_cost=20),
+        ],
+        estimated_total_cost=100,
+    )
+
+
+def three_day_draft() -> ItineraryDraft:
+    return ItineraryDraft(
+        items=[
+            ItineraryItemInput(day_number=1, position=1, title="A", estimated_cost=20),
+            ItineraryItemInput(day_number=2, position=1, title="B", estimated_cost=20),
+            ItineraryItemInput(day_number=3, position=1, title="C", estimated_cost=20),
+        ],
+        estimated_total_cost=60,
+    )
+
+
 @pytest.fixture()
 def harness(monkeypatch: pytest.MonkeyPatch) -> Generator[Harness, None, None]:
     test_database_url = getenv("TEST_DATABASE_URL")
@@ -203,14 +227,18 @@ def seed_reference_rows(db: Session, trip_id: str) -> None:
     db.flush()
 
 
-def seed_itinerary(harness: Harness, trip_id: str) -> None:
+def seed_itinerary(
+    harness: Harness,
+    trip_id: str,
+    initial_draft: ItineraryDraft | None = None,
+) -> None:
     with harness.session_factory() as db:
         seed_reference_rows(db, trip_id)
         db.commit()
         itinerary_service.generate_itinerary_for_selected_destination(
             db,
             trip_context(trip_id),
-            draft(),
+            initial_draft or draft(),
         )
 
 
@@ -355,6 +383,154 @@ def test_changed_revision_increments_once_and_resets_approvals(harness: Harness)
     assert current["days"][0]["activities"][0]["title"] == "Arrival walk updated"
     progress = harness.client.get(f"/api/trips/{trip_id}/itinerary/approval").json()
     assert progress["approved_count"] == 0
+
+
+def test_custom_free_form_instruction_is_persisted_and_uses_existing_revision_flow(
+    harness: Harness,
+) -> None:
+    trip_id = uuid_for("trip-custom-revision")
+    seed_itinerary(harness, trip_id)
+    instruction = "Keep Portland Head Light but replace everything else on Day 2."
+
+    started = harness.client.post(
+        f"/api/trips/{trip_id}/itinerary/revisions",
+        headers={"X-Test-Member-Id": MEMBER_1},
+        json={"instruction": instruction},
+    )
+
+    assert started.status_code == 202
+    assert started.json()["status"] == "RUNNING"
+
+    with harness.session_factory() as db:
+        stored = db.get(ItineraryRevision, UUID(started.json()["id"]))
+        assert stored is not None
+        assert stored.instruction == instruction
+
+        completed = itinerary_service.complete_revision(
+            db, started.json()["id"], draft(changed=True)
+        )
+        assert completed.status == "SUCCEEDED"
+
+
+def test_same_day_move_reorders_items_increments_version_and_resets_approvals(
+    harness: Harness,
+) -> None:
+    trip_id = uuid_for("trip-same-day-move")
+    seed_itinerary(harness, trip_id, multi_day_draft())
+    approve(harness, trip_id, MEMBER_1)
+    current = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    item_id = current["days"][0]["activities"][2]["id"]
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{item_id}/position",
+        headers={"X-Test-Member-Id": MEMBER_2},
+        json={"day_number": 1, "position": 1},
+    )
+
+    assert response.status_code == 200
+    assert [item["title"] for item in response.json()["days"][0]["activities"]] == [
+        "C",
+        "A",
+        "B",
+    ]
+    assert response.json()["version"] == 2
+    assert (
+        harness.client.get(f"/api/trips/{trip_id}/itinerary/approval").json()["approved_count"] == 0
+    )
+
+
+def test_cross_day_drag_swaps_exact_slots_and_preserves_day_counts(harness: Harness) -> None:
+    trip_id = uuid_for("trip-cross-day-swap")
+    seed_itinerary(harness, trip_id, three_day_draft())
+    before = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    source_id = before["days"][0]["activities"][0]["id"]
+    target_id = before["days"][1]["activities"][0]["id"]
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{source_id}/swap",
+        json={"target_activity_id": target_id},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["days"]) == len(before["days"]) == 3
+    assert [len(day["activities"]) for day in body["days"]] == [1, 1, 1]
+    assert [day["activities"][0]["title"] for day in body["days"]] == ["B", "A", "C"]
+    assert body["version"] == 2
+
+
+def test_legacy_position_endpoint_rejects_cross_day_move(harness: Harness) -> None:
+    trip_id = uuid_for("trip-cross-day-position-rejected")
+    seed_itinerary(harness, trip_id, three_day_draft())
+    before = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    item_id = before["days"][0]["activities"][0]["id"]
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{item_id}/position",
+        json={"day_number": 2, "position": 1},
+    )
+
+    assert response.status_code == 400
+    after = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    assert after["version"] == before["version"]
+    assert [len(day["activities"]) for day in after["days"]] == [1, 1, 1]
+
+
+def test_cross_day_swap_preserves_all_other_slots(harness: Harness) -> None:
+    trip_id = uuid_for("trip-cross-day-swap-multiple")
+    seed_itinerary(harness, trip_id, multi_day_draft())
+    current = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    source_id = current["days"][0]["activities"][1]["id"]
+    target_id = current["days"][1]["activities"][0]["id"]
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{source_id}/swap",
+        json={"target_activity_id": target_id},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["title"] for item in body["days"][0]["activities"]] == ["A", "D", "C"]
+    assert [item["title"] for item in body["days"][1]["activities"]] == ["B", "E"]
+    assert [item["position"] for item in body["days"][0]["activities"]] == [1, 2, 3]
+    assert [item["position"] for item in body["days"][1]["activities"]] == [1, 2]
+    assert body["version"] == 2
+
+
+def test_noop_move_does_not_increment_version_or_reset_approvals(harness: Harness) -> None:
+    trip_id = uuid_for("trip-noop-move")
+    seed_itinerary(harness, trip_id, multi_day_draft())
+    approve(harness, trip_id, MEMBER_1)
+    current = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    item = current["days"][0]["activities"][0]
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{item['id']}/position",
+        json={"day_number": 1, "position": 1},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["version"] == 1
+    assert (
+        harness.client.get(f"/api/trips/{trip_id}/itinerary/approval").json()["approved_count"] == 1
+    )
+
+
+def test_finalized_itinerary_rejects_activity_move(harness: Harness) -> None:
+    trip_id = uuid_for("trip-finalized-move")
+    seed_itinerary(harness, trip_id, multi_day_draft())
+    current = harness.client.get(f"/api/trips/{trip_id}/itinerary").json()
+    item_id = current["days"][0]["activities"][0]["id"]
+    for member_id in (MEMBER_1, MEMBER_2, MEMBER_3):
+        assert approve(harness, trip_id, member_id).status_code == 200
+
+    response = harness.client.patch(
+        f"/api/trips/{trip_id}/itinerary/items/{item_id}/position",
+        json={"day_number": 2, "position": 1},
+    )
+
+    assert response.status_code == 409
+    assert harness.client.get(f"/api/trips/{trip_id}/itinerary").json()["version"] == 1
 
 
 def test_no_change_revision_preserves_version_content_and_approvals(harness: Harness) -> None:

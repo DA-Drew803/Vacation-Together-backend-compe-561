@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from app.schemas.itinerary import (
     ItineraryItemMetadata,
     TripContext,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_MODEL = "gpt-6-luna"
 PER_PERSON_COST_BASIS = "PER_PERSON"
@@ -520,6 +523,21 @@ class OpenAIItineraryProvider:
             raise ItineraryProviderResponseError(
                 "OpenAI returned an incomplete or invalid itinerary revision"
             ) from error
+
+        if revised.outcome == "APPLIED":
+            # The line-item costs are the authoritative generated values. Repair a stale
+            # aggregate before the normal budget and shape validation so a harmless model
+            # arithmetic slip does not fail every otherwise-valid revision.
+            item_total_cents = sum(item.estimated_cost_cents for item in revised.items)
+            if revised.estimated_total_cost_cents != item_total_cents:
+                logger.info(
+                    "itinerary_revision repaired_total old=%s new=%s",
+                    revised.estimated_total_cost_cents,
+                    item_total_cents,
+                )
+                revised = revised.model_copy(
+                    update={"estimated_total_cost_cents": item_total_cents}
+                )
 
         if revised.currency.upper() != currency:
             raise ItineraryProviderResponseError(

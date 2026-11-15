@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 GOOGLE_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
 GOOGLE_PLACES_BASE_URL = "https://places.googleapis.com/v1/"
 GOOGLE_FIELD_MASK = (
-    "places.id,places.displayName,places.formattedAddress,places.location,places.photos"
+    "places.id,places.displayName,places.formattedAddress,places.location,"
+    "places.photos,places.rating,places.userRatingCount"
 )
 PHOTO_NAME_PATTERN = re.compile(r"^places/[^/]+/photos/[^/]+$")
 
@@ -61,7 +62,7 @@ def _search_google_places(query: str) -> dict | None:
     return places[0]
 
 
-def _serialize_place(place: dict) -> dict[str, str | float] | None:
+def _serialize_place(place: dict) -> dict[str, str | float | int] | None:
     place_id = place.get("id")
     display_name = place.get("displayName")
     location = place.get("location")
@@ -78,7 +79,7 @@ def _serialize_place(place: dict) -> dict[str, str | float] | None:
     except (KeyError, TypeError, ValueError):
         return None
 
-    result: dict[str, str | float] = {
+    result: dict[str, str | float | int] = {
         "place_id": place_id,
         "location": formatted_address
         if isinstance(formatted_address, str)
@@ -86,6 +87,12 @@ def _serialize_place(place: dict) -> dict[str, str | float] | None:
         "latitude": latitude,
         "longitude": longitude,
     }
+    rating = place.get("rating")
+    if isinstance(rating, (int, float)) and 0 <= rating <= 5:
+        result["rating"] = float(rating)
+    rating_count = place.get("userRatingCount")
+    if isinstance(rating_count, int) and rating_count > 0:
+        result["rating_count"] = rating_count
     photos = place.get("photos")
     if isinstance(photos, list) and photos and isinstance(photos[0], dict):
         photo_name = photos[0].get("name")
@@ -95,14 +102,16 @@ def _serialize_place(place: dict) -> dict[str, str | float] | None:
 
 
 @lru_cache(maxsize=512)
-def resolve_place(title: str, destination: str) -> dict[str, str | float] | None:
+def resolve_place(title: str, destination: str) -> dict[str, str | float | int] | None:
     """Resolve an itinerary activity through Google Places (New)."""
     place = _search_google_places(f"{title}, {destination}")
     return _serialize_place(place) if place else None
 
 
 @lru_cache(maxsize=128)
-def resolve_destination(destination: str, location: str = "") -> dict[str, str | float] | None:
+def resolve_destination(
+    destination: str, location: str = ""
+) -> dict[str, str | float | int] | None:
     """Resolve the selected destination through Google Places (New)."""
     query = ", ".join(part for part in (destination, location) if part.strip())
     place = _search_google_places(query)

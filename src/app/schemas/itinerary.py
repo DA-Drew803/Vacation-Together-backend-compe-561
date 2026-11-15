@@ -43,6 +43,15 @@ class RevisionInput(BaseModel):
     instruction: str
 
 
+class MoveActivityInput(BaseModel):
+    day_number: int = Field(ge=1)
+    position: int = Field(ge=1)
+
+
+class SwapActivityInput(BaseModel):
+    target_activity_id: UUID
+
+
 class Revision(BaseModel):
     id: UUID
     status: RevisionStatus

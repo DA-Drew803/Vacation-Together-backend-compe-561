@@ -746,13 +746,14 @@ def test_interest_revisions_are_disabled_before_provider_call(instruction: str) 
     assert client.responses.calls == []
 
 
-def test_revision_rejects_inconsistent_output_total() -> None:
+def test_revision_repairs_inconsistent_output_total() -> None:
     output = revision_output()
     output["estimated_total_cost_cents"] = 30_100
     provider, _ = provider_with(output)
 
-    with pytest.raises(ItineraryProviderResponseError, match="equal the sum"):
-        provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
+    revised = provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
+
+    assert revised.estimated_total_cost == 230
 
 
 @pytest.mark.parametrize(

@@ -159,6 +159,10 @@ def serialize_itinerary(
             resolved = resolve_place(item.title, destination_query)
             if resolved:
                 activity.update(resolved)
+                if "photo_name" in resolved:
+                    activity["photo_url"] = (
+                        f"/trips/{itinerary.trip_id}/itinerary/items/{item.id}/photo"
+                    )
         days[item.day_number].append(activity)
 
     destination = (
@@ -380,7 +384,146 @@ def request_revision(
     except IntegrityError:
         db.rollback()
         raise ItineraryConflictError("A revision is already running") from None
+    logger.info(
+        "itinerary_revision received id=%s trip_id=%s base_version=%s instruction=%r",
+        revision.id,
+        context.trip_id,
+        revision.base_version,
+        instruction,
+    )
     return revision
+
+
+def move_itinerary_item(
+    db: Session,
+    context: TripContext,
+    current_member_id: str,
+    item_id: str,
+    day_number: int,
+    position: int,
+) -> Itinerary:
+    eligible_ids = {
+        member.member_id for member in context.eligible_members if member.voting_eligible
+    }
+    if current_member_id not in eligible_ids:
+        raise ItineraryConflictError("Only eligible trip members may move itinerary activities")
+
+    itinerary = require_itinerary(db, context.trip_id, lock=True)
+    if itinerary.status != "DRAFT":
+        raise ItineraryConflictError(
+            f"Itinerary cannot be reordered while it is {itinerary.status.lower()}"
+        )
+
+    item_uuid = parse_uuid(item_id, "item_id")
+    item = next((candidate for candidate in itinerary.items if candidate.id == item_uuid), None)
+    if item is None:
+        raise ItineraryConflictError("Itinerary activity does not exist")
+
+    days: dict[int, list[ItineraryItem]] = {}
+    for candidate in sorted(itinerary.items, key=lambda value: (value.day_number, value.position)):
+        days.setdefault(candidate.day_number, []).append(candidate)
+    if day_number > max(days, default=0):
+        raise ItineraryInvalidError("Destination day is outside the itinerary")
+
+    source_day = item.day_number
+    source_position = item.position
+    if source_day != day_number:
+        raise ItineraryInvalidError("Cross-day changes require a target activity to swap with")
+    if source_day == day_number and source_position == position:
+        return itinerary
+
+    source_items = days[source_day]
+    destination_items = days.setdefault(day_number, [])
+    source_items.remove(item)
+    if source_day == day_number:
+        if position > len(source_items) + 1:
+            raise ItineraryInvalidError("Destination position is outside the selected day")
+        source_items.insert(position - 1, item)
+    else:
+        if position > len(destination_items) + 1:
+            raise ItineraryInvalidError("Destination position is outside the selected day")
+        destination_items.insert(position - 1, item)
+
+    affected_items = [candidate for values in days.values() for candidate in values]
+    temporary_position = len(itinerary.items) + 1
+    for candidate in affected_items:
+        candidate.position = temporary_position
+        temporary_position += 1
+    db.flush()
+
+    for affected_day, values in days.items():
+        for index, candidate in enumerate(values, start=1):
+            candidate.day_number = affected_day
+            candidate.position = index
+
+    itinerary.version += 1
+    db.execute(delete(ItineraryApproval).where(ItineraryApproval.itinerary_id == itinerary.id))
+    db.flush()
+    db.commit()
+    return require_itinerary(db, context.trip_id)
+
+
+def swap_itinerary_items(
+    db: Session,
+    context: TripContext,
+    current_member_id: str,
+    source_item_id: str,
+    target_item_id: str,
+) -> Itinerary:
+    eligible_ids = {
+        member.member_id for member in context.eligible_members if member.voting_eligible
+    }
+    if current_member_id not in eligible_ids:
+        raise ItineraryConflictError("Only eligible trip members may swap itinerary activities")
+
+    itinerary = require_itinerary(db, context.trip_id, lock=True)
+    if itinerary.status != "DRAFT":
+        raise ItineraryConflictError(
+            f"Itinerary cannot be reordered while it is {itinerary.status.lower()}"
+        )
+
+    source_id = parse_uuid(source_item_id, "source_activity_id")
+    target_id = parse_uuid(target_item_id, "target_activity_id")
+    if source_id == target_id:
+        return itinerary
+
+    items_by_id = {item.id: item for item in itinerary.items}
+    source = items_by_id.get(source_id)
+    target = items_by_id.get(target_id)
+    if source is None or target is None:
+        raise ItineraryConflictError("Both swap activities must belong to this itinerary")
+
+    source_day, source_position = source.day_number, source.position
+    target_day, target_position = target.day_number, target.position
+    if source_day == target_day:
+        return move_itinerary_item(
+            db,
+            context,
+            current_member_id,
+            source_item_id,
+            target_day,
+            target_position,
+        )
+
+    original_slots = {item.id: (item.day_number, item.position) for item in itinerary.items}
+    temporary_position = len(itinerary.items) + 1
+    for item in itinerary.items:
+        item.position = temporary_position
+        temporary_position += 1
+    db.flush()
+
+    for item in itinerary.items:
+        if item.id == source.id:
+            item.day_number, item.position = target_day, target_position
+        elif item.id == target.id:
+            item.day_number, item.position = source_day, source_position
+        else:
+            item.day_number, item.position = original_slots[item.id]
+    itinerary.version += 1
+    db.execute(delete(ItineraryApproval).where(ItineraryApproval.itinerary_id == itinerary.id))
+    db.flush()
+    db.commit()
+    return require_itinerary(db, context.trip_id)
 
 
 def complete_revision(
@@ -504,6 +647,13 @@ def execute_claimed_ai_revision(
         )
         base_version = revision.base_version
         instruction = revision.instruction
+        logger.info(
+            "itinerary_revision graph_started id=%s trip_id=%s base_version=%s instruction=%r",
+            revision_id,
+            context.trip_id,
+            base_version,
+            instruction,
+        )
 
         # End the read transaction before the external provider call.
         db.commit()
@@ -515,7 +665,14 @@ def execute_claimed_ai_revision(
             provider,
             allow_persisted_metadata_revisions=True,
         )
-        return complete_revision(db, revision_id, revised_draft)
+        completed = complete_revision(db, revision_id, revised_draft)
+        logger.info(
+            "itinerary_revision persisted id=%s status=%s final_version=%s",
+            revision_id,
+            completed.status,
+            require_itinerary(db, context.trip_id).version,
+        )
+        return completed
     except Exception:
         cleanup_failed_revision(db, revision_id)
         raise
@@ -563,6 +720,7 @@ def run_revision_background(
                 return
 
             context = build_trip_context(db, trip_id)
+            logger.info("itinerary_revision provider_started id=%s", revision_id)
             execute_claimed_ai_revision(db, context, revision_id, provider)
         except Exception:
             logger.exception("Background itinerary revision failed: %s", revision_id)

@@ -11,6 +11,8 @@ def test_serialize_google_place_keeps_verified_metadata_and_photo_name() -> None
             "formattedAddress": "12 Captain Strout Circle, Cape Elizabeth, ME 04107",
             "location": {"latitude": 43.6231, "longitude": -70.2078},
             "photos": [{"name": "places/ChIJdestination/photos/abc123"}],
+            "rating": 4.8,
+            "userRatingCount": 2400,
         }
     )
 
@@ -20,6 +22,8 @@ def test_serialize_google_place_keeps_verified_metadata_and_photo_name() -> None
         "latitude": 43.6231,
         "longitude": -70.2078,
         "photo_name": "places/ChIJdestination/photos/abc123",
+        "rating": 4.8,
+        "rating_count": 2400,
     }
 
 
