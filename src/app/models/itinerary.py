@@ -2,6 +2,7 @@ from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     ForeignKey,
@@ -82,6 +83,7 @@ class ItineraryItem(Base):
         default=Decimal("0.00"),
         nullable=False,
     )
+    semantic_metadata: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
 
     itinerary: Mapped[Itinerary] = relationship(back_populates="items")
 

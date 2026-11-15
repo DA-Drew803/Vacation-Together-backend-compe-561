@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import pytest
+
+from app.schemas.itinerary import (
+    Budget,
+    EligibleMember,
+    ItineraryDraft,
+    ItineraryItemInput,
+    TripContext,
+)
+from app.services.openai_itinerary import ItineraryProviderResponseError
+from app.workflows.itinerary_graph import (
+    run_itinerary_generation_graph,
+    run_itinerary_revision_graph,
+)
+
+
+def context() -> TripContext:
+    return TripContext(
+        trip_id="trip-graph",
+        selected_destination_id="destination-graph",
+        destination_name="Demo City",
+        start_date="2026-06-01",
+        end_date="2026-06-03",
+        budget=Budget(max_amount=500, currency="USD"),
+        eligible_members=[EligibleMember(member_id="member-graph", display_name="Graph Tester")],
+    )
+
+
+def draft(title: str = "Museum visit") -> ItineraryDraft:
+    return ItineraryDraft(
+        items=[ItineraryItemInput(day_number=1, position=1, title=title, estimated_cost=40)],
+        estimated_total_cost=40,
+    )
+
+
+class FlakyGenerationProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate(self, _context: TripContext) -> ItineraryDraft:
+        self.calls += 1
+        if self.calls == 1:
+            raise ItineraryProviderResponseError("malformed model output")
+        return draft()
+
+
+class AlwaysFailingGenerationProvider:
+    def generate(self, _context: TripContext) -> ItineraryDraft:
+        raise ItineraryProviderResponseError("provider output remained invalid")
+
+
+class RevisionProvider:
+    def revise(
+        self,
+        _context: TripContext,
+        _current: ItineraryDraft,
+        _current_version: int,
+        _instruction: str,
+    ) -> ItineraryDraft:
+        return draft("Accessible museum visit")
+
+
+def test_generation_graph_retries_bounded_provider_failure() -> None:
+    provider = FlakyGenerationProvider()
+
+    result = run_itinerary_generation_graph(context(), provider)
+
+    assert result.items[0].title == "Museum visit"
+    assert provider.calls == 2
+
+
+def test_generation_graph_fails_after_retry_exhaustion() -> None:
+    with pytest.raises(ItineraryProviderResponseError, match="provider output"):
+        run_itinerary_generation_graph(context(), AlwaysFailingGenerationProvider())
+
+
+def test_revision_graph_returns_provider_result_without_persisting_it() -> None:
+    result = run_itinerary_revision_graph(
+        context(),
+        draft(),
+        1,
+        "Reduce walking",
+        RevisionProvider(),
+    )
+
+    assert result.items[0].title == "Accessible museum visit"

@@ -28,11 +28,17 @@ from app.schemas.itinerary import (
     EligibleMember,
     ItineraryDraft,
     ItineraryItemInput,
+    ItineraryItemMetadata,
     RevisionInput,
     TripContext,
     WeatherDay,
 )
 from app.services import member as member_service
+from app.services.places import resolve_destination, resolve_place
+from app.workflows.itinerary_graph import (
+    run_itinerary_generation_graph,
+    run_itinerary_revision_graph,
+)
 
 if TYPE_CHECKING:
     from app.services.openai_itinerary import ItineraryDraftProvider, ItineraryRevisionProvider
@@ -121,22 +127,48 @@ def decimal_value(value: float | Decimal) -> Decimal:
     return Decimal(str(value))
 
 
-def serialize_itinerary(itinerary: Itinerary, currency: str) -> dict:
+def serialize_itinerary(
+    itinerary: Itinerary,
+    currency: str,
+    *,
+    destination_name: str | None = None,
+    destination_location: str = "",
+    destination_photo_url: str | None = None,
+    weather: list[WeatherDay] | None = None,
+) -> dict:
     days: dict[int, list[dict]] = defaultdict(list)
     for item in itinerary.items:
-        days[item.day_number].append(
-            {
-                "id": str(item.id),
-                "position": item.position,
-                "title": item.title,
-                "estimated_cost": money_value(item.estimated_cost),
-            }
-        )
+        activity = {
+            "id": str(item.id),
+            "position": item.position,
+            "title": item.title,
+            "estimated_cost": money_value(item.estimated_cost),
+        }
+        if destination_name:
+            destination_query = ", ".join(
+                part for part in (destination_name, destination_location) if part.strip()
+            )
+            resolved = resolve_place(item.title, destination_query)
+            if resolved:
+                activity.update(resolved)
+        days[item.day_number].append(activity)
 
+    destination = (
+        resolve_destination(destination_name, destination_location) if destination_name else None
+    )
     return {
         "id": str(itinerary.id),
         "trip_id": str(itinerary.trip_id),
         "destination_id": str(itinerary.destination_id),
+        "destination_name": destination_name,
+        "destination_place_id": destination.get("place_id") if destination else None,
+        "destination_formatted_address": destination.get("location") if destination else None,
+        "destination_latitude": destination.get("latitude") if destination else None,
+        "destination_longitude": destination.get("longitude") if destination else None,
+        "destination_photo_url": destination_photo_url
+        if destination and destination.get("photo_name")
+        else None,
+        "weather": [item.model_dump(mode="json") for item in weather] if weather else None,
         "version": itinerary.version,
         "status": itinerary.status,
         "days": [
@@ -156,6 +188,21 @@ def serialize_revision(revision: ItineraryRevision) -> dict:
         "status": revision.status,
         "requested_version": revision.base_version,
     }
+
+
+def get_revision(db: Session, trip_id: str, revision_id: str) -> ItineraryRevision:
+    revision = db.scalar(
+        select(ItineraryRevision).where(
+            ItineraryRevision.id == parse_uuid(revision_id, "revision_id"),
+            ItineraryRevision.itinerary_id
+            == select(Itinerary.id)
+            .where(Itinerary.trip_id == parse_uuid(trip_id, "trip_id"))
+            .scalar_subquery(),
+        )
+    )
+    if revision is None:
+        raise ItineraryConflictError("Revision does not exist")
+    return revision
 
 
 def get_itinerary(db: Session, trip_id: str, *, lock: bool = False) -> Itinerary | None:
@@ -190,6 +237,9 @@ def replace_items(
             position=item.position,
             title=item.title,
             estimated_cost=decimal_value(item.estimated_cost),
+            semantic_metadata=(
+                item.metadata.model_dump(mode="json") if item.metadata is not None else None
+            ),
         )
         for item in item_inputs
     ]
@@ -233,6 +283,9 @@ def generate_itinerary_for_selected_destination(
                 position=item.position,
                 title=item.title,
                 estimated_cost=decimal_value(item.estimated_cost),
+                semantic_metadata=(
+                    item.metadata.model_dump(mode="json") if item.metadata is not None else None
+                ),
             )
             for item in draft.items
         ],
@@ -268,7 +321,7 @@ def generate_and_persist_initial_itinerary(
     existing = get_itinerary(db, context.trip_id)
     if existing is not None:
         return existing
-    draft = provider.generate(context)
+    draft = run_itinerary_generation_graph(context, provider)
     return generate_itinerary_for_selected_destination(db, context, draft)
 
 
@@ -431,6 +484,11 @@ def execute_claimed_ai_revision(
                     position=item.position,
                     title=item.title,
                     estimated_cost=money_value(item.estimated_cost),
+                    metadata=(
+                        ItineraryItemMetadata.model_validate(item.semantic_metadata)
+                        if item.semantic_metadata is not None
+                        else None
+                    ),
                 )
                 for item in itinerary.items
             ],
@@ -441,11 +499,13 @@ def execute_claimed_ai_revision(
 
         # End the read transaction before the external provider call.
         db.commit()
-        revised_draft = provider.revise(
+        revised_draft = run_itinerary_revision_graph(
             context,
             current_draft,
             base_version,
             instruction,
+            provider,
+            allow_persisted_metadata_revisions=True,
         )
         return complete_revision(db, revision_id, revised_draft)
     except Exception:

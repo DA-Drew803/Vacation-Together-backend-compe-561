@@ -26,6 +26,13 @@ class Itinerary(BaseModel):
     id: str
     trip_id: str
     destination_id: str
+    destination_name: str | None = None
+    destination_place_id: str | None = None
+    destination_formatted_address: str | None = None
+    destination_latitude: float | None = None
+    destination_longitude: float | None = None
+    destination_photo_url: str | None = None
+    weather: list["WeatherDay"] | None = None
     version: int = Field(ge=1)
     status: ItineraryStatus
     days: list[dict[str, Any]]
@@ -106,7 +113,7 @@ class FoodPreferences(BaseModel):
 
 
 class ItineraryItemMetadata(BaseModel):
-    """Provider-side semantic metadata; intentionally not persisted by the DB models."""
+    """Trusted semantic metadata used to validate later itinerary revisions."""
 
     category: str
     tags: list[str] = Field(default_factory=list)

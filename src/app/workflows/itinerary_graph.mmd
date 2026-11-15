@@ -1,0 +1,8 @@
+flowchart TD
+    A[Workflow request] --> B[prepare]
+    B --> C[invoke_provider]
+    C -->|valid result| D[finish]
+    C -->|retryable failure and attempts remain| C
+    C -->|non-retryable or attempts exhausted| E[fail]
+    D --> F[Service-layer persistence]
+    E --> G[Revision marked failed]
