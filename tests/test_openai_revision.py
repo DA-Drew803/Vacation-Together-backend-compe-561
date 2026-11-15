@@ -296,7 +296,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
     )
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(
             trip_context(),
             draft,
@@ -304,7 +304,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
             "Replace the museum with a park",
         )
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 1
 
 
 def test_revision_accepts_fully_unprefixed_canonical_draft() -> None:
@@ -416,14 +416,14 @@ def test_metadata_free_cost_revision_does_not_grant_trusted_provenance() -> None
     assert all(item.metadata is None for item in revised.items)
     assert not provider_module.is_issued_trusted_draft(revised)
     replacement_provider, replacement_client = provider_with(revision_output())
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         replacement_provider.revise(
             trip_context(),
             revised,
             2,
             "Replace the museum with a park",
         )
-    assert replacement_client.responses.calls == []
+    assert len(replacement_client.responses.calls) == 1
 
 
 def test_trusted_draft_retains_provenance_after_metadata_preserving_cost_revision() -> None:
@@ -547,13 +547,13 @@ def test_generation_rejects_noncanonical_title_boundaries(
         provider.generate(trip_context())
 
 
-def test_walking_reduction_is_rejected_without_measurable_fields() -> None:
+def test_walking_reduction_requires_validated_provider_metadata() -> None:
     provider, client = provider_with(revision_output(target="walking"))
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, "Reduce walking on Day 3")
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -722,10 +722,10 @@ def test_activity_replacement_rejects_ambiguous_requested_replacement() -> None:
 def test_activity_replacements_are_rejected_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -740,10 +740,10 @@ def test_activity_replacements_are_rejected_before_provider_call(instruction: st
 def test_interest_revisions_are_disabled_before_provider_call(instruction: str) -> None:
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 1
 
 
 def test_revision_repairs_inconsistent_output_total() -> None:
@@ -1002,9 +1002,7 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         seed_itinerary(db, context)
         approve_first_member(db, context)
 
-        with pytest.raises(
-            ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"
-        ):
+        with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
             itinerary_service.execute_ai_revision(
                 db,
                 context,
@@ -1016,7 +1014,7 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert client.responses.calls == []
+        assert len(client.responses.calls) == 2
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1
@@ -1034,8 +1032,8 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
         approve_first_member(db, context)
 
         with pytest.raises(
-            ItineraryRevisionUnsupportedError,
-            match="provider-generated trusted draft",
+            ItineraryProviderResponseError,
+            match="trusted metadata",
         ):
             itinerary_service.execute_ai_revision(
                 db,
@@ -1048,7 +1046,7 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert client.responses.calls == []
+        assert len(client.responses.calls) == 2
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1

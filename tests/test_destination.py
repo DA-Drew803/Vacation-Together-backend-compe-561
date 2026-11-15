@@ -174,6 +174,22 @@ def test_update_ballot_success(db: Session) -> None:
     assert votes[0].destination_candidate_id == candidate.id
 
 
+def test_update_ballot_replaces_the_member_current_vote(db: Session) -> None:
+    trip_id = uuid.uuid4()
+    member_id = uuid.uuid4()
+    first = create_candidate(db, trip_id, "Tokyo", 0.91, "Good match", 950, "USD")
+    second = create_candidate(db, trip_id, "Paris", 0.88, "Another match", 900, "USD")
+    add_trip(db, trip_id)
+    start_voting(db, trip_id, [member_id])
+
+    update_ballot(db, trip_id, member_id, [first.id])
+    update_ballot(db, trip_id, member_id, [second.id])
+
+    votes = destination_service.get_votes_for_member(db, trip_id, member_id)
+    assert len(votes) == 1
+    assert votes[0].destination_candidate_id == second.id
+
+
 def test_update_ballot_rejects_candidate_from_another_trip(
     db: Session,
 ) -> None:

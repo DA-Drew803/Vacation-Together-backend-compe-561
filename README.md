@@ -4,6 +4,8 @@
 
 The backend should follow `Vacation_Together_OpenAPI_Final.yaml` as the API source of truth.
 
+Frontend repository: [Vacation Together Frontend](https://github.com/DA-Drew803/Vacation-Together-frontend-compe-561)
+
 ## Stack
 
 - Python 3.12

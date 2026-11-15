@@ -52,13 +52,19 @@ class AlwaysFailingGenerationProvider:
 
 
 class RevisionProvider:
+    def __init__(self) -> None:
+        self.interpreted_intent = None
+
     def revise(
         self,
         _context: TripContext,
         _current: ItineraryDraft,
         _current_version: int,
         _instruction: str,
+        *,
+        interpreted_intent=None,
     ) -> ItineraryDraft:
+        self.interpreted_intent = interpreted_intent
         return draft("Accessible museum visit")
 
 
@@ -77,12 +83,15 @@ def test_generation_graph_fails_after_retry_exhaustion() -> None:
 
 
 def test_revision_graph_returns_provider_result_without_persisting_it() -> None:
+    provider = RevisionProvider()
     result = run_itinerary_revision_graph(
         context(),
         draft(),
         1,
-        "Reduce walking",
-        RevisionProvider(),
+        "I am tired but still want something relaxing on Day 1",
+        provider,
     )
 
     assert result.items[0].title == "Accessible museum visit"
+    assert provider.interpreted_intent.target_day == 1
+    assert "low physical effort" in provider.interpreted_intent.situational_constraints

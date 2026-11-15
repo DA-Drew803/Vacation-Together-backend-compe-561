@@ -3,10 +3,13 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, status
-from sqlalchemy.orm import Session
+from fastapi.responses import Response
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_trip_member, get_itinerary_provider
+from app.models.destination import DestinationCandidate
 from app.models.member import TripMember
 from app.schemas.destination import (
     CandidateResponse,
@@ -24,6 +27,7 @@ from app.services.destination import (
     start_voting,
 )
 from app.services.openai_itinerary import OpenAIItineraryProvider
+from app.services.places import fetch_photo, resolve_destination
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +35,46 @@ router = APIRouter(
     prefix="/trips/{trip_id}",
     tags=["destination"],
 )
+
+
+@router.get("/destination_candidates/{candidate_id}/photo")
+def read_candidate_photo(
+    trip_id: Annotated[str, Path()],
+    candidate_id: Annotated[str, Path()],
+    db: Annotated[Session, Depends(get_db)],
+    current_member: Annotated[TripMember, Depends(get_current_trip_member)],
+) -> Response:
+    del current_member
+    try:
+        trip_uuid = uuid.UUID(trip_id)
+        candidate_uuid = uuid.UUID(candidate_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Candidate photo unavailable"
+        ) from None
+    candidate = db.scalar(
+        select(DestinationCandidate)
+        .where(
+            DestinationCandidate.id == candidate_uuid,
+            DestinationCandidate.trip_id == trip_uuid,
+        )
+        .options(selectinload(DestinationCandidate.destination))
+    )
+    if candidate is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Candidate photo unavailable"
+        )
+    place = resolve_destination(candidate.destination.name, candidate.destination.location)
+    photo_name = place.get("photo_name") if place else None
+    photo = fetch_photo(photo_name) if isinstance(photo_name, str) else None
+    if photo is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Candidate photo unavailable"
+        )
+    content, media_type = photo
+    return Response(
+        content, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"}
+    )
 
 
 def invalid_response(error: DestinationInvalidError) -> HTTPException:

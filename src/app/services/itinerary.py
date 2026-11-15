@@ -23,6 +23,7 @@ from app.models.trip import Trip
 from app.models.user import User
 from app.schemas.itinerary import (
     ApprovalInput,
+    ApprovalMember,
     ApprovalProgress,
     Budget,
     EligibleMember,
@@ -152,6 +153,14 @@ def serialize_itinerary(
             "title": item.title,
             "estimated_cost": money_value(item.estimated_cost),
         }
+        if item.semantic_metadata:
+            tags = item.semantic_metadata.get("tags", [])
+            category = item.semantic_metadata.get("category")
+            purpose_parts = [str(tag).replace("_", " ") for tag in tags[:3] if str(tag).strip()]
+            if not purpose_parts and category:
+                purpose_parts = [str(category).replace("_", " ")]
+            if purpose_parts:
+                activity["purpose"] = " · ".join(purpose_parts).upper()
         if destination_name:
             destination_query = ", ".join(
                 part for part in (destination_name, destination_location) if part.strip()
@@ -731,6 +740,8 @@ def approval_progress(
     db: Session,
     itinerary: Itinerary,
     eligible_member_ids: set[str],
+    current_member_id: str | None = None,
+    eligible_members: list[EligibleMember] | None = None,
 ) -> ApprovalProgress:
     eligible_member_uuids = {
         parse_uuid(member_id, "eligible member_id") for member_id in eligible_member_ids
@@ -747,20 +758,46 @@ def approval_progress(
             )
             .count()
         )
+    approval_rows = (
+        db.scalars(
+            select(ItineraryApproval).where(
+                ItineraryApproval.itinerary_id == itinerary.id,
+                ItineraryApproval.version == itinerary.version,
+                ItineraryApproval.trip_member_id.in_(eligible_member_uuids),
+            )
+        ).all()
+        if eligible_member_uuids
+        else []
+    )
+    approved_by_member = {
+        str(approval.trip_member_id): approval.approved for approval in approval_rows
+    }
+    members = [
+        ApprovalMember(
+            member_id=member.member_id,
+            display_name=member.display_name,
+            approved=approved_by_member.get(member.member_id, False),
+        )
+        for member in sorted(
+            (member for member in (eligible_members or [])),
+            key=lambda member: member.display_name.lower(),
+        )
+    ]
     return ApprovalProgress(
         version=itinerary.version,
         approved_count=approved_count,
         eligible_count=len(eligible_member_ids),
         finalized=itinerary.status == "FINALIZED",
+        members=members,
+        current_member_id=current_member_id,
     )
 
 
 def get_approval_progress(db: Session, context: TripContext) -> ApprovalProgress:
     itinerary = require_itinerary(db, context.trip_id)
-    eligible_ids = {
-        member.member_id for member in context.eligible_members if member.voting_eligible
-    }
-    return approval_progress(db, itinerary, eligible_ids)
+    eligible_members = [member for member in context.eligible_members if member.voting_eligible]
+    eligible_ids = {member.member_id for member in eligible_members}
+    return approval_progress(db, itinerary, eligible_ids, eligible_members=eligible_members)
 
 
 def approve_current_version(
