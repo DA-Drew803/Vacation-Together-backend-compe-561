@@ -1,3 +1,4 @@
+from datetime import date
 from uuid import UUID
 
 from sqlalchemy import select
@@ -44,6 +45,32 @@ def update_trip(
         trip.name = name
     if state is not None:
         trip.state = state
+    db.commit()
+    db.refresh(trip)
+    return trip
+
+
+def set_selected_dates(
+    db: Session,
+    trip: Trip,
+    start_date: date,
+    end_date: date,
+) -> Trip:
+    trip.selected_start_date = start_date
+    trip.selected_end_date = end_date
+    db.commit()
+    db.refresh(trip)
+    return trip
+
+
+def set_travel_details(
+    db: Session,
+    trip: Trip,
+    departure_location: str | None,
+    transportation_preference: str,
+) -> Trip:
+    trip.departure_location = departure_location
+    trip.transportation_preference = transportation_preference
     db.commit()
     db.refresh(trip)
     return trip

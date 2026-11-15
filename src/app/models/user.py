@@ -11,6 +11,7 @@ def new_id() -> UUID:
     return uuid4()
 
 
+# Store user data in the database.
 class User(Base):
     __tablename__ = "users"
 

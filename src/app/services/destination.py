@@ -19,7 +19,7 @@ CURATED_DESTINATIONS = (
     {
         "name": "San Diego",
         "location": "California, USA",
-        "baseline_cost": Decimal("700.00"),
+        "baseline_cost": Decimal("200.00"),
         "tags": ["beach", "food", "outdoors", "relaxation"],
         "country_code": "US",
         "latitude": Decimal("32.715736"),
@@ -28,7 +28,7 @@ CURATED_DESTINATIONS = (
     {
         "name": "Portland",
         "location": "Oregon, USA",
-        "baseline_cost": Decimal("600.00"),
+        "baseline_cost": Decimal("250.00"),
         "tags": ["food", "nature", "arts", "outdoors"],
         "country_code": "US",
         "latitude": Decimal("45.515232"),
@@ -37,7 +37,7 @@ CURATED_DESTINATIONS = (
     {
         "name": "Seattle",
         "location": "Washington, USA",
-        "baseline_cost": Decimal("850.00"),
+        "baseline_cost": Decimal("300.00"),
         "tags": ["food", "museums", "nature", "city"],
         "country_code": "US",
         "latitude": Decimal("47.606209"),
@@ -46,7 +46,7 @@ CURATED_DESTINATIONS = (
     {
         "name": "Las Vegas",
         "location": "Nevada, USA",
-        "baseline_cost": Decimal("650.00"),
+        "baseline_cost": Decimal("350.00"),
         "tags": ["food", "nightlife", "entertainment", "city"],
         "country_code": "US",
         "latitude": Decimal("36.169941"),
@@ -55,7 +55,7 @@ CURATED_DESTINATIONS = (
     {
         "name": "Denver",
         "location": "Colorado, USA",
-        "baseline_cost": Decimal("800.00"),
+        "baseline_cost": Decimal("300.00"),
         "tags": ["nature", "outdoors", "food", "adventure"],
         "country_code": "US",
         "latitude": Decimal("39.739236"),
