@@ -34,6 +34,7 @@ def request_daily(
             "start_date": start_date.isoformat(),
             "end_date": end_date.isoformat(),
             "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code",
+            "temperature_unit": "fahrenheit",
             "timezone": "UTC",
         }
     )

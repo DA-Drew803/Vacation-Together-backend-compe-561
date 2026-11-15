@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from app.schemas.itinerary import (
     ItineraryItemMetadata,
     TripContext,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_MODEL = "gpt-6-luna"
 PER_PERSON_COST_BASIS = "PER_PERSON"
@@ -429,6 +432,8 @@ class OpenAIItineraryProvider:
         current: ItineraryDraft,
         current_version: int,
         instruction: str,
+        *,
+        allow_persisted_metadata_revisions: bool = False,
     ) -> ItineraryDraft:
         travel_days, budget_cents, currency, destination_name, group_size = validate_context(
             context
@@ -462,10 +467,12 @@ class OpenAIItineraryProvider:
             budget_cents,
             currency,
         )
+        persisted_metadata_trusted = all(has_valid_metadata(item) for item in current_payload.items)
         validate_revision_intent_against_current(
             intent,
             current_payload,
-            trusted_source=is_issued_trusted_draft(current),
+            trusted_source=is_issued_trusted_draft(current)
+            or (allow_persisted_metadata_revisions and persisted_metadata_trusted),
         )
 
         request_context = {
@@ -517,6 +524,21 @@ class OpenAIItineraryProvider:
                 "OpenAI returned an incomplete or invalid itinerary revision"
             ) from error
 
+        if revised.outcome == "APPLIED":
+            # The line-item costs are the authoritative generated values. Repair a stale
+            # aggregate before the normal budget and shape validation so a harmless model
+            # arithmetic slip does not fail every otherwise-valid revision.
+            item_total_cents = sum(item.estimated_cost_cents for item in revised.items)
+            if revised.estimated_total_cost_cents != item_total_cents:
+                logger.info(
+                    "itinerary_revision repaired_total old=%s new=%s",
+                    revised.estimated_total_cost_cents,
+                    item_total_cents,
+                )
+                revised = revised.model_copy(
+                    update={"estimated_total_cost_cents": item_total_cents}
+                )
+
         if revised.currency.upper() != currency:
             raise ItineraryProviderResponseError(
                 "Itinerary currency does not match the trip budget"
@@ -536,6 +558,11 @@ class OpenAIItineraryProvider:
                 budget_cents,
                 currency,
             )
+        if allow_persisted_metadata_revisions and intent.kind in {
+            RevisionIntentKind.CHEAPER_DAY,
+            RevisionIntentKind.COST_ONLY,
+        }:
+            revised = preserve_current_metadata_for_cost_only_revision(revised, current_payload)
         content_changed = validate_revision_output(
             revised,
             current_payload,
@@ -1012,6 +1039,22 @@ def has_metadata(item: RevisionItineraryItem) -> bool:
     )
 
 
+def has_valid_metadata(item: RevisionItineraryItem) -> bool:
+    if not has_metadata(item):
+        return False
+    try:
+        validate_metadata_values(
+            item.category or "",
+            item.tags,
+            item.environment,
+            item.mobility,
+            item.intensity,
+        )
+    except ItineraryProviderResponseError:
+        return False
+    return True
+
+
 def metadata_from_revision_item(item: RevisionItineraryItem) -> ItineraryItemMetadata | None:
     if item.category is None:
         return None
@@ -1114,6 +1157,38 @@ def validate_cost_only_metadata(
         raise ItineraryProviderResponseError(
             "A cost-only revision must preserve all semantic metadata exactly"
         )
+
+
+def preserve_current_metadata_for_cost_only_revision(
+    revised: GeneratedRevisionDraft,
+    current: RevisionCurrentDraft,
+) -> GeneratedRevisionDraft:
+    """Keep persisted, metadata-free itineraries metadata-free after a cost revision."""
+    if len(revised.items) != len(current.items):
+        return revised
+    if [(item.day_number, item.position) for item in revised.items] != [
+        (item.day_number, item.position) for item in current.items
+    ]:
+        return revised
+    if any(has_metadata(item) for item in current.items):
+        return revised
+
+    return revised.model_copy(
+        update={
+            "items": [
+                item.model_copy(
+                    update={
+                        "category": previous.category,
+                        "tags": previous.tags,
+                        "environment": previous.environment,
+                        "mobility": previous.mobility,
+                        "intensity": previous.intensity,
+                    }
+                )
+                for item, previous in zip(revised.items, current.items, strict=True)
+            ]
+        }
+    )
 
 
 def validate_revision_intent_against_current_legacy(
