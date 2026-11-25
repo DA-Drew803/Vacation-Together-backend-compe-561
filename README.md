@@ -69,6 +69,8 @@ uv run dev
 
 Set `FRONTEND_ORIGINS` in `.env` to the comma-separated frontend origins allowed by CORS, for example `http://localhost:3000`.
 
+`JWT_SECRET_KEY` is required and should be a random value of at least 32 bytes. `DATABASE_URL` defaults to a local SQLite database when omitted. PostgreSQL is used by the Docker configuration. OpenAI and Google Places keys are optional for registration, trip planning, group matching, curated destination results, and voting; AI itinerary generation/revision and live place details require their respective keys.
+
 Open:
 
 ```text
@@ -100,7 +102,8 @@ docker compose down
 ## Test
 
 ```bash
-uv run pytest
+JWT_SECRET_KEY=replace-with-a-test-secret-at-least-32-bytes uv run pytest
+uv run ruff check .
 ```
 
 Run tests against Docker PostgreSQL:
