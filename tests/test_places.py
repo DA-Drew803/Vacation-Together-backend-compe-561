@@ -29,6 +29,36 @@ def test_serialize_google_place_keeps_verified_metadata_and_photo_name() -> None
 
 def test_resolve_place_uses_google_search_and_caches(monkeypatch) -> None:
     places.resolve_place.cache_clear()
+
+
+def test_resolve_place_tries_fallback_queries_when_the_full_query_is_unresolved(
+    monkeypatch,
+) -> None:
+    places.resolve_place.cache_clear()
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "test-key")
+    calls: list[str] = []
+
+    def fake_search(query: str) -> dict | None:
+        calls.append(query)
+        if query == "Portland Head Light":
+            return {
+                "id": "ChIJheadlight",
+                "displayName": {"text": "Portland Head Light"},
+                "location": {"latitude": 43.6231, "longitude": -70.2078},
+            }
+        return None
+
+    monkeypatch.setattr(places, "_search_google_places", fake_search)
+
+    result = places.resolve_place("Portland Head Light", "Portland, Maine")
+
+    assert result is not None
+    assert calls == [
+        "Portland Head Light, Portland, Maine",
+        "Portland Head Light in Portland, Maine",
+        "Portland Head Light",
+    ]
+    places.resolve_place.cache_clear()
     calls: list[str] = []
 
     monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "test-key")

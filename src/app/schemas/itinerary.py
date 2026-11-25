@@ -56,6 +56,7 @@ class Revision(BaseModel):
     id: UUID
     status: RevisionStatus
     requested_version: int
+    failure_reason: str | None = None
 
 
 class ApprovalInput(BaseModel):

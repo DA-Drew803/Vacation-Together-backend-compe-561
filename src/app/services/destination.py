@@ -1,6 +1,9 @@
+import logging
+import os
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, selectinload
@@ -13,7 +16,11 @@ from app.models.destination import (
 )
 from app.models.trip import Trip
 from app.services import member as member_service
+from app.services.openai_itinerary import ItineraryProviderError
+from app.services.places import resolve_destination
 from app.services.weather import fetch_weather_snapshot
+
+logger = logging.getLogger(__name__)
 
 CURATED_DESTINATIONS = (
     {
@@ -137,36 +144,172 @@ def serialize_candidates(
     return {"candidates": [serialize_candidate(candidate) for candidate in candidates]}
 
 
-def generate_candidates(db: Session, trip_id: uuid.UUID) -> list[DestinationCandidate]:
+def _curated_recommendations(
+    budget: Decimal,
+    interests: set[str],
+    previous_names: set[str],
+) -> list[dict[str, Any]]:
+    recommendations: list[dict[str, Any]] = []
+    for item in CURATED_DESTINATIONS:
+        if item["name"].casefold() in previous_names or item["baseline_cost"] > budget:
+            continue
+        overlap = interests.intersection(item["tags"])
+        recommendations.append(
+            {
+                "name": item["name"],
+                "location": item["location"],
+                "estimated_cost_cents": int(item["baseline_cost"] * 100),
+                "match_score": float(Decimal(len(overlap)) / Decimal(max(len(interests), 1))),
+                "match_explanation": (
+                    "Matches group interests: " + ", ".join(sorted(overlap))
+                    if overlap
+                    else "Fits the group budget"
+                ),
+                "tags": item["tags"],
+            }
+        )
+    return recommendations
+
+
+def _valid_recommendations(
+    recommendations: list[dict[str, Any]],
+    budget: Decimal,
+    previous_names: set[str],
+) -> list[dict[str, Any]]:
+    valid: list[dict[str, Any]] = []
+    names: set[str] = set()
+    budget_cents = int(budget * 100)
+    for recommendation in recommendations:
+        name = str(recommendation.get("name", "")).strip()
+        location = str(recommendation.get("location", "")).strip()
+        cost_cents = recommendation.get("estimated_cost_cents")
+        explanation = str(recommendation.get("match_explanation", "")).strip()
+        if not name or not location or name.casefold() in previous_names:
+            continue
+        if name.casefold() in names or not isinstance(cost_cents, int):
+            continue
+        if cost_cents < 0 or cost_cents > budget_cents:
+            continue
+        if not explanation:
+            continue
+        valid.append(
+            {
+                "name": name,
+                "location": location,
+                "estimated_cost_cents": cost_cents,
+                "match_explanation": explanation,
+                "tags": [
+                    str(tag).strip().lower()
+                    for tag in recommendation.get("tags", [])
+                    if str(tag).strip()
+                ],
+            }
+        )
+        names.add(name.casefold())
+    return valid
+
+
+def _match_score(interests: set[str], tags: list[str]) -> Decimal:
+    overlap = interests.intersection(tag.casefold() for tag in tags)
+    return (Decimal(len(overlap)) / Decimal(max(len(interests), 1))).quantize(Decimal("0.0001"))
+
+
+def _verify_destination(item: dict[str, Any]) -> dict[str, Any] | None:
+    """Use Google Places metadata when configured; never trust AI coordinates."""
+    if not os.getenv("GOOGLE_PLACES_API_KEY", "").strip():
+        return item
+    place = resolve_destination(item["name"], item["location"])
+    if place is None:
+        return None
+    verified = dict(item)
+    verified["location"] = str(place.get("location") or item["location"])
+    verified["latitude"] = place.get("latitude")
+    verified["longitude"] = place.get("longitude")
+    return verified
+
+
+def generate_candidates(
+    db: Session,
+    trip_id: uuid.UUID,
+    provider: Any | None = None,
+) -> list[DestinationCandidate]:
     if db.scalar(select(DestinationVotingState).where(DestinationVotingState.trip_id == trip_id)):
         raise DestinationVotingConflictError("Candidates cannot change after voting starts")
     match = member_service.get_group_match(db, trip_id)
     budget = Decimal(match["budget_amount"])
     interests = set(match["interests"])
+    previous_names = {
+        candidate.destination.name.casefold() for candidate in get_candidates_for_trip(db, trip_id)
+    }
+
+    recommendations: list[dict[str, Any]] | None = None
+    if provider is not None and hasattr(provider, "generate_destination_recommendations"):
+        try:
+            recommendations = _valid_recommendations(
+                provider.generate_destination_recommendations(
+                    {
+                        "shared_dates": {
+                            "start_date": match["start_date"].isoformat(),
+                            "end_date": match["end_date"].isoformat(),
+                        },
+                        "per_person_budget": {
+                            "amount": str(match["budget_amount"]),
+                            "currency": match["currency"],
+                        },
+                        "group_size": len(match["member_ids"]),
+                        "interests": sorted(interests),
+                        "departure_location": (
+                            db.get(Trip, trip_id).departure_location
+                            if db.get(Trip, trip_id) is not None
+                            else None
+                        ),
+                        "transportation_preference": (
+                            db.get(Trip, trip_id).transportation_preference
+                            if db.get(Trip, trip_id) is not None
+                            else None
+                        ),
+                        "previous_destination_names": sorted(previous_names),
+                    }
+                ),
+                budget,
+                previous_names,
+            )
+        except ItineraryProviderError:
+            logger.warning("OpenAI destination recommendations unavailable; using fallback")
+    if not recommendations or len(recommendations) < 3:
+        recommendations = _curated_recommendations(budget, interests, previous_names)
+    recommendations = [
+        verified
+        for recommendation in recommendations
+        if (verified := _verify_destination(recommendation)) is not None
+    ]
+    if not recommendations:
+        raise DestinationVotingConflictError("No destination recommendations fit the group budget")
+
     db.execute(delete(DestinationCandidate).where(DestinationCandidate.trip_id == trip_id))
     generated: list[DestinationCandidate] = []
-    for item in CURATED_DESTINATIONS:
-        if item["baseline_cost"] > budget:
-            continue
+    for item in recommendations:
+        estimated_cost = (Decimal(item["estimated_cost_cents"]) / 100).quantize(Decimal("0.01"))
         destination = db.scalar(select(Destination).where(Destination.name == item["name"]))
         if destination is None:
-            destination = Destination(**item)
+            destination = Destination(
+                name=item["name"],
+                location=item["location"],
+                baseline_cost=estimated_cost,
+                tags=item["tags"],
+                latitude=item.get("latitude"),
+                longitude=item.get("longitude"),
+            )
             db.add(destination)
             db.flush()
-        overlap = interests.intersection(destination.tags)
-        score = Decimal(len(overlap)) / Decimal(max(len(interests), 1))
         candidate = DestinationCandidate(
             trip_id=trip_id,
             destination_id=destination.id,
-            match_score=score.quantize(Decimal("0.0001")),
-            match_explanation=(
-                "Matches group interests: " + ", ".join(sorted(overlap))
-                if overlap
-                else "Fits the group budget"
-            ),
-            estimated_cost_per_person=destination.baseline_cost,
+            match_score=_match_score(interests, item["tags"]),
+            match_explanation=item["match_explanation"],
+            estimated_cost_per_person=estimated_cost,
             currency=match["currency"],
-            recommendation_data_status="calculated",
+            recommendation_data_status="openai" if provider is not None else "calculated",
         )
         db.add(candidate)
         db.flush()
@@ -177,7 +320,7 @@ def generate_candidates(db: Session, trip_id: uuid.UUID) -> list[DestinationCand
         generated.append(candidate)
     if not generated:
         db.rollback()
-        raise DestinationVotingConflictError("No curated destinations fit the group budget")
+        raise DestinationVotingConflictError("No destination recommendations fit the group budget")
     db.commit()
     return sorted(generated, key=lambda value: (-value.match_score, str(value.destination_id)))
 

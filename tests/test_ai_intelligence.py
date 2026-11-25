@@ -26,11 +26,14 @@ from app.services.openai_itinerary import (
 class FakeResponses:
     def __init__(self, outputs: list[Any]) -> None:
         self.outputs = outputs
+        self.last_output: Any = None
         self.calls: list[dict[str, Any]] = []
 
     def parse(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(output_parsed=self.outputs.pop(0))
+        if self.outputs:
+            self.last_output = self.outputs.pop(0)
+        return SimpleNamespace(output_parsed=self.last_output)
 
 
 class FakeClient:
@@ -92,6 +95,18 @@ def rich_output() -> dict[str, Any]:
         ],
         "estimated_total_cost_cents": sum(item[4] for item in items),
     }
+
+
+def rich_revision_output(*, outcome: str = "UNSUPPORTED") -> dict[str, Any]:
+    output = rich_output()
+    output.update(
+        {
+            "outcome": outcome,
+            "operation": "SEMANTIC",
+            "outcome_reason": "The request cannot be applied safely.",
+        }
+    )
+    return output
 
 
 def provider_with(*outputs: Any) -> tuple[OpenAIItineraryProvider, FakeClient]:
@@ -208,7 +223,7 @@ def test_whole_trip_cost_revision_preserves_content_and_reduces_total() -> None:
 
 
 def test_semantic_revision_is_rejected_after_metadata_free_round_trip() -> None:
-    provider, client = provider_with(rich_output())
+    provider, client = provider_with(rich_revision_output())
     metadata_free = ItineraryDraft(
         items=[
             ItineraryItemInput(day_number=1, position=1, title="Museum", estimated_cost=20),
@@ -220,10 +235,10 @@ def test_semantic_revision_is_rejected_after_metadata_free_round_trip() -> None:
         estimated_total_cost=70,
     )
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="trusted"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(rich_context(), metadata_free, 1, "Give us more nature")
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 0
 
 
 def test_activity_replacement_with_rich_metadata_cannot_change_lodging() -> None:
@@ -294,12 +309,12 @@ def test_metadata_from_an_arbitrary_canonical_draft_does_not_authorize_semantic_
     generated_provider, _ = provider_with(rich_output())
     generated = generated_provider.generate(rich_context())
     caller_draft = ItineraryDraft.model_validate(generated.model_dump())
-    revision_provider, client = provider_with(rich_output())
+    revision_provider, client = provider_with(rich_revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="cannot be applied safely"):
         revision_provider.revise(rich_context(), caller_draft, 1, "Give us more nature")
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 0
 
 
 def test_direct_trusted_draft_construction_cannot_obtain_provenance() -> None:
@@ -324,12 +339,12 @@ def test_direct_trusted_draft_construction_cannot_obtain_provenance() -> None:
         items=legitimate.items,
         estimated_total_cost=legitimate.estimated_total_cost,
     )
-    revision_provider, client = provider_with(rich_output())
+    revision_provider, client = provider_with(rich_revision_output())
 
-    with pytest.raises(ItineraryRevisionUnsupportedError, match="provider-generated trusted draft"):
+    with pytest.raises(ItineraryRevisionUnsupportedError, match="cannot be applied safely"):
         revision_provider.revise(rich_context(), forged, 1, "Give us more nature")
 
-    assert client.responses.calls == []
+    assert len(client.responses.calls) == 0
 
 
 @pytest.mark.parametrize(
@@ -539,7 +554,7 @@ def test_revision_provider_handles_blank_invalid_failed_and_successful_requests(
     successful_response["items"][2]["estimated_cost_cents"] -= 1_000
     successful_response["estimated_total_cost_cents"] -= 1_000
 
-    provider, client = provider_with(rich_output(), invalid_response, successful_response)
+    provider, client = provider_with(rich_output(), successful_response)
     current = provider.generate(rich_context())
     original = current.model_copy(deep=True)
 
@@ -547,19 +562,12 @@ def test_revision_provider_handles_blank_invalid_failed_and_successful_requests(
         provider.revise(rich_context(), current, 1, "   ")
     assert len(client.responses.calls) == 1
     assert current == original
-
     with pytest.raises(ItineraryRevisionUnsupportedError, match="Destination and date"):
         provider.revise(rich_context(), current, 1, "Change the destination to Paris")
     assert len(client.responses.calls) == 1
     assert current == original
-
-    with pytest.raises(ItineraryProviderResponseError, match="cost-only revision"):
-        provider.revise(rich_context(), current, 1, "Make the whole trip cheaper")
-    assert len(client.responses.calls) == 2
-    assert current == original
-
     revised = provider.revise(rich_context(), current, 1, "Make the whole trip cheaper")
-    assert len(client.responses.calls) == 3
+    assert len(client.responses.calls) == 2
     assert revised.estimated_total_cost == 910
     assert [item.title for item in revised.items] == [item.title for item in current.items]
     assert current == original

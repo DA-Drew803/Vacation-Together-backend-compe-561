@@ -36,6 +36,12 @@ from app.schemas.itinerary import (
     WeatherDay,
 )
 from app.services import member as member_service
+from app.services.openai_itinerary import (
+    ItineraryProviderError,
+    ItineraryProviderTimeoutError,
+    ItineraryRevisionPatchError,
+    ItineraryRevisionUnsupportedError,
+)
 from app.services.places import resolve_destination, resolve_place
 from app.workflows.itinerary_graph import (
     run_itinerary_generation_graph,
@@ -47,6 +53,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+_revision_failure_reasons: dict[str, str] = {}
 
 
 class ItineraryConflictError(ValueError):
@@ -204,11 +211,17 @@ def serialize_itinerary(
 
 
 def serialize_revision(revision: ItineraryRevision) -> dict:
-    return {
+    payload = {
         "id": str(revision.id),
         "status": revision.status,
         "requested_version": revision.base_version,
     }
+    if revision.status == "FAILED":
+        payload["failure_reason"] = _revision_failure_reasons.get(
+            str(revision.id),
+            "The revision could not be applied safely. Your current itinerary is unchanged.",
+        )
+    return payload
 
 
 def get_revision(db: Session, trip_id: str, revision_id: str) -> ItineraryRevision:
@@ -586,7 +599,23 @@ def complete_revision(
     return revision
 
 
-def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
+def revision_failure_reason(error: BaseException | None) -> str:
+    if isinstance(error, ItineraryRevisionPatchError):
+        return "The AI could not produce a revision that stayed within the requested scope after repair attempts."
+    if isinstance(error, ItineraryRevisionUnsupportedError):
+        return "This revision request is not supported."
+    if isinstance(error, ItineraryProviderTimeoutError):
+        return "The revision provider timed out. Please try again."
+    if isinstance(error, ItineraryProviderError):
+        return "The revision provider was unavailable. Please try again."
+    return "The revision could not be applied safely. Your current itinerary is unchanged."
+
+
+def fail_revision(
+    db: Session,
+    revision_id: str,
+    failure_reason: str | None = None,
+) -> ItineraryRevision:
     revision = db.scalar(
         select(ItineraryRevision)
         .where(ItineraryRevision.id == parse_uuid(revision_id, "revision_id"))
@@ -595,7 +624,7 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
     if revision is None:
         raise ItineraryConflictError("Revision does not exist")
     if revision.status not in {"PENDING", "RUNNING"}:
-        raise ItineraryConflictError("Revision is no longer active")
+        return revision
 
     itinerary = db.scalar(
         select(Itinerary).where(Itinerary.id == revision.itinerary_id).with_for_update()
@@ -605,6 +634,7 @@ def fail_revision(db: Session, revision_id: str) -> ItineraryRevision:
         itinerary.status = "DRAFT"
     db.commit()
     db.refresh(revision)
+    _revision_failure_reasons[str(revision.id)] = failure_reason or revision_failure_reason(None)
     return revision
 
 
@@ -682,12 +712,16 @@ def execute_claimed_ai_revision(
             require_itinerary(db, context.trip_id).version,
         )
         return completed
-    except Exception:
-        cleanup_failed_revision(db, revision_id)
+    except Exception as error:
+        cleanup_failed_revision(db, revision_id, error)
         raise
 
 
-def cleanup_failed_revision(db: Session, revision_id: str) -> None:
+def cleanup_failed_revision(
+    db: Session,
+    revision_id: str,
+    error: BaseException | None = None,
+) -> None:
     """Best-effort cleanup that never masks the exception which triggered it."""
     try:
         db.rollback()
@@ -695,7 +729,7 @@ def cleanup_failed_revision(db: Session, revision_id: str) -> None:
         logger.exception("Failed to roll back before cleaning up revision %s", revision_id)
         return
     try:
-        fail_revision(db, revision_id)
+        fail_revision(db, revision_id, revision_failure_reason(error))
     except Exception:
         try:
             db.rollback()
@@ -725,15 +759,17 @@ def run_revision_background(
                 return
 
             if provider is None:
-                cleanup_failed_revision(db, revision_id)
+                cleanup_failed_revision(
+                    db, revision_id, ItineraryProviderError("Provider unavailable")
+                )
                 return
 
             context = build_trip_context(db, trip_id)
             logger.info("itinerary_revision provider_started id=%s", revision_id)
             execute_claimed_ai_revision(db, context, revision_id, provider)
-        except Exception:
+        except Exception as error:
             logger.exception("Background itinerary revision failed: %s", revision_id)
-            cleanup_failed_revision(db, revision_id)
+            cleanup_failed_revision(db, revision_id, error)
 
 
 def approval_progress(

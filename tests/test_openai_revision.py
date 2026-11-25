@@ -54,7 +54,8 @@ class FakeResponses:
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
-        return SimpleNamespace(output_parsed=self.output)
+        output = self.output.pop(0) if isinstance(self.output, list) else self.output
+        return SimpleNamespace(output_parsed=output)
 
 
 class FakeOpenAIClient:
@@ -296,7 +297,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
     )
     provider, client = provider_with(revision_output())
 
-    with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
+    with pytest.raises(ItineraryProviderResponseError, match="trusted semantic metadata"):
         provider.revise(
             trip_context(),
             draft,
@@ -498,7 +499,7 @@ def test_no_change_cost_only_response_cannot_inject_metadata() -> None:
     output["items"][0]["category"] = "flights"
     provider, _ = provider_with(output)
 
-    with pytest.raises(ItineraryProviderResponseError, match="semantic metadata exactly"):
+    with pytest.raises(ItineraryProviderResponseError, match="preserve the current itinerary"):
         provider.revise(trip_context(), draft, 1, "Make Day 2 cheaper")
 
     assert all(item.metadata is None for item in draft.items)
@@ -627,7 +628,9 @@ def test_day_specific_revision_must_preserve_unrelated_days() -> None:
     output["items"][0]["title"] = "Different flight"
     provider, _ = provider_with(output)
 
-    with pytest.raises(ItineraryProviderResponseError, match="change only estimated costs"):
+    with pytest.raises(
+        ItineraryProviderResponseError, match="preserve all semantic metadata exactly"
+    ):
         provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
 
 
@@ -636,7 +639,9 @@ def test_cheaper_day_may_change_only_requested_day_costs() -> None:
     output["items"][2]["title"] = "Lower-cost lunch"
     provider, _ = provider_with(output)
 
-    with pytest.raises(ItineraryProviderResponseError, match="change only estimated costs"):
+    with pytest.raises(
+        ItineraryProviderResponseError, match="preserve all semantic metadata exactly"
+    ):
         provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
 
 
@@ -648,6 +653,28 @@ def test_cheaper_day_rejects_cost_change_outside_requested_day() -> None:
 
     with pytest.raises(ItineraryProviderResponseError, match="preserve all unrelated days"):
         provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
+
+
+def test_revision_requests_targeted_patch_contract() -> None:
+    output = {
+        "cost_basis": "PER_PERSON",
+        "currency": "USD",
+        "outcome": "APPLIED",
+        "outcome_reason": "Reduced the Day 2 food estimate.",
+        "destination_name": "San Diego",
+        "start_date": "2027-06-10",
+        "end_date": "2027-06-12",
+        "changes": [
+            {"day_number": 2, "position": 1, "estimated_cost_cents": 1_000},
+        ],
+    }
+    provider, client = provider_with(output)
+
+    revised = provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
+
+    assert revised.estimated_total_cost == 220
+    assert len(client.responses.calls) == 1
+    assert client.responses.calls[0]["text_format"].__name__ == "GeneratedRevisionPatch"
 
 
 def test_applied_cheaper_day_must_strictly_decrease_target_day_cost() -> None:
@@ -827,7 +854,7 @@ def test_applied_revision_rejects_day_or_position_inconsistency(
         output["items"][1]["position"] = 3
     provider, _ = provider_with(output)
 
-    with pytest.raises(ItineraryProviderResponseError, match=message):
+    with pytest.raises(ItineraryProviderResponseError, match="target only existing"):
         provider.revise(trip_context(), current_draft(), 1, "Make Day 2 cheaper")
 
 
@@ -1014,7 +1041,7 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert len(client.responses.calls) == 2
+        assert len(client.responses.calls) == 3
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1
@@ -1046,7 +1073,7 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert len(client.responses.calls) == 2
+        assert len(client.responses.calls) == 3
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1
@@ -1138,6 +1165,80 @@ def test_orchestration_failure_preserves_content_version_and_approval(
         assert itinerary.version == 1
         assert persisted.model_dump() == original
         assert len(approvals) == 1
+
+
+def test_all_invalid_revision_attempts_fail_without_modifying_itinerary(
+    session_factory: sessionmaker[Session],
+) -> None:
+    context = trip_context(uuid_for("all-invalid-revision-attempts"))
+    invalid = revision_output()
+    invalid["items"][0]["estimated_cost_cents"] = 4_900
+    invalid["estimated_total_cost_cents"] = 22_900
+    provider, client = provider_with([invalid, invalid, invalid])
+
+    with session_factory() as db:
+        seed_itinerary(db, context)
+        original = deepcopy(current_draft().model_dump())
+
+        with pytest.raises(ItineraryProviderResponseError, match="preserve all unrelated days"):
+            itinerary_service.execute_ai_revision(
+                db,
+                context,
+                MEMBER_2,
+                RevisionInput(instruction="Make Day 2 cheaper"),
+                provider,
+            )
+
+        itinerary = itinerary_service.require_itinerary(db, context.trip_id)
+        revision = db.scalar(select(ItineraryRevision))
+        persisted = ItineraryDraft(
+            items=[
+                ItineraryItemInput(
+                    day_number=item.day_number,
+                    position=item.position,
+                    title=item.title,
+                    estimated_cost=float(item.estimated_cost),
+                )
+                for item in itinerary.items
+            ],
+            estimated_total_cost=float(itinerary.estimated_total_cost),
+        )
+        assert len(client.responses.calls) == 3
+        assert revision is not None and revision.status == "FAILED"
+        serialized = itinerary_service.serialize_revision(revision)
+        assert "scope" in serialized["failure_reason"]
+        assert itinerary.version == 1
+        assert itinerary.status == "DRAFT"
+        assert persisted.model_dump() == original
+
+
+def test_invalid_patch_is_repaired_then_persisted_once(
+    session_factory: sessionmaker[Session],
+) -> None:
+    context = trip_context(uuid_for("repair-then-success"))
+    invalid = revision_output()
+    invalid["items"][0]["estimated_cost_cents"] = 4_900
+    invalid["estimated_total_cost_cents"] = 22_900
+    valid = revision_output()
+    provider, client = provider_with([invalid, valid])
+
+    with session_factory() as db:
+        seed_itinerary(db, context)
+        revision = itinerary_service.execute_ai_revision(
+            db,
+            context,
+            MEMBER_2,
+            RevisionInput(instruction="Make Day 2 cheaper"),
+            provider,
+        )
+
+        itinerary = itinerary_service.require_itinerary(db, context.trip_id)
+        assert revision.status == "SUCCEEDED"
+        assert itinerary.version == 2
+        assert len(client.responses.calls) == 2
+        retry_payload = json.loads(client.responses.calls[1]["input"][1]["content"])
+        assert "validation_feedback" in retry_payload
+        assert "unrelated days" in retry_payload["validation_feedback"]["violation"]
 
 
 def test_unexpected_provider_exception_cleans_up_revision_lifecycle(
@@ -1353,6 +1454,33 @@ def test_request_revision_does_not_refresh_after_commit(
         monkeypatch.setattr(db, "refresh", original_refresh)
         failed = itinerary_service.fail_revision(db, str(revision.id))
         assert failed.status == "FAILED"
+
+
+def test_failed_revision_cleanup_is_idempotent(
+    session_factory: sessionmaker[Session],
+) -> None:
+    context = trip_context(uuid_for("idempotent-failed-revision"))
+    with session_factory() as db:
+        seed_itinerary(db, context)
+        revision = itinerary_service.request_revision(
+            db,
+            context,
+            MEMBER_2,
+            RevisionInput(instruction="Make Day 2 cheaper"),
+        )
+
+        first = itinerary_service.fail_revision(
+            db,
+            str(revision.id),
+            "The revision failed safely.",
+        )
+        second = itinerary_service.fail_revision(db, str(revision.id))
+
+        assert first.status == "FAILED"
+        assert second.status == "FAILED"
+        assert itinerary_service.serialize_revision(second)["failure_reason"] == (
+            "The revision failed safely."
+        )
 
 
 def test_existing_active_revision_is_not_cleaned_up_by_another_request(
