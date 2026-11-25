@@ -305,7 +305,7 @@ def test_activity_replacement_is_rejected_for_plain_canonical_titles() -> None:
             "Replace the museum with a park",
         )
 
-    assert len(client.responses.calls) == 1
+    assert client.responses.calls == []
 
 
 def test_revision_accepts_fully_unprefixed_canonical_draft() -> None:
@@ -424,7 +424,7 @@ def test_metadata_free_cost_revision_does_not_grant_trusted_provenance() -> None
             2,
             "Replace the museum with a park",
         )
-    assert len(replacement_client.responses.calls) == 1
+    assert replacement_client.responses.calls == []
 
 
 def test_trusted_draft_retains_provenance_after_metadata_preserving_cost_revision() -> None:
@@ -554,7 +554,7 @@ def test_walking_reduction_requires_validated_provider_metadata() -> None:
     with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, "Reduce walking on Day 3")
 
-    assert len(client.responses.calls) == 1
+    assert client.responses.calls == []
 
 
 @pytest.mark.parametrize(
@@ -752,7 +752,7 @@ def test_activity_replacements_are_rejected_before_provider_call(instruction: st
     with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
-    assert len(client.responses.calls) == 1
+    assert client.responses.calls == []
 
 
 @pytest.mark.parametrize(
@@ -770,7 +770,7 @@ def test_interest_revisions_are_disabled_before_provider_call(instruction: str) 
     with pytest.raises(ItineraryProviderResponseError, match="trusted metadata"):
         provider.revise(trip_context(), current_draft(), 1, instruction)
 
-    assert len(client.responses.calls) == 1
+    assert client.responses.calls == []
 
 
 def test_revision_repairs_inconsistent_output_total() -> None:
@@ -1041,7 +1041,7 @@ def test_disabled_interest_revision_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert len(client.responses.calls) == 3
+        assert client.responses.calls == []
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1
@@ -1073,7 +1073,7 @@ def test_disabled_activity_replacement_preserves_itinerary_and_approval(
         itinerary = itinerary_service.require_itinerary(db, context.trip_id)
         revision = db.scalar(select(ItineraryRevision))
         approvals = db.scalars(select(ItineraryApproval)).all()
-        assert len(client.responses.calls) == 3
+        assert client.responses.calls == []
         assert revision is not None and revision.status == "FAILED"
         assert itinerary.status == "DRAFT"
         assert itinerary.version == 1

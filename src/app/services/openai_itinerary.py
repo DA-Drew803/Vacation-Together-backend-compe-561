@@ -1494,6 +1494,21 @@ def validate_revision_intent_against_current(
     if intent.kind in {RevisionIntentKind.SEMANTIC, RevisionIntentKind.REPLACE_ACTIVITY}:
         if not current.items:
             raise ItineraryRevisionUnsupportedError("The current itinerary has no activities")
+        if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
+            replacement_instruction = (intent.replacement_text or "").casefold()
+            replacement_match = re.search(r"\b(?:with|for)\s+(.+)$", replacement_instruction)
+            replacement = replacement_match.group(1).strip() if replacement_match else ""
+            if replacement in {
+                "",
+                "a different activity",
+                "an activity",
+                "another activity",
+                "some activity",
+                "something else",
+            }:
+                raise ItineraryRevisionUnsupportedError(
+                    "Activity replacement requires clear replacement intent"
+                )
         if not trusted_source:
             raise ItineraryRevisionUnsupportedError(
                 "Semantic and replacement revisions are not supported without trusted metadata "
@@ -1912,6 +1927,8 @@ def validate_revision_output(
         )
     else:
         validate_semantic_revision(revised, current)
+        if intent.kind == RevisionIntentKind.REPLACE_ACTIVITY:
+            validate_activity_replacement(revised, current)
     if intent.target_day is not None:
         require_unchanged_items(
             [item for item in current.items if item.day_number != intent.target_day],
