@@ -13,6 +13,7 @@ from app.services.openai_itinerary import (
     ItineraryProviderError,
     ItineraryProviderInputError,
     ItineraryProviderResponseError,
+    ItineraryRevisionPatchError,
     ItineraryRevisionProvider,
     ItineraryRevisionUnsupportedError,
     RevisionIntent,
@@ -20,6 +21,7 @@ from app.services.openai_itinerary import (
 )
 
 MAX_GRAPH_ATTEMPTS = 2
+MAX_REVISION_ATTEMPTS = 3
 
 
 class ItineraryGraphError(RuntimeError):
@@ -41,6 +43,7 @@ class ItineraryGraphState(TypedDict, total=False):
     error: str
     error_exception: Exception
     interpreted_revision: RevisionIntent
+    repair_feedback: str
 
 
 def _prepare(state: ItineraryGraphState) -> ItineraryGraphState:
@@ -90,6 +93,8 @@ def _invoke_provider(state: ItineraryGraphState) -> ItineraryGraphState:
                 )
             if "interpreted_intent" in signature(revision_provider.revise).parameters:
                 revise_kwargs["interpreted_intent"] = state["interpreted_revision"]
+            if "repair_feedback" in signature(revision_provider.revise).parameters:
+                revise_kwargs["repair_feedback"] = state.get("repair_feedback")
             result = revision_provider.revise(
                 context,
                 state["current"],
@@ -124,6 +129,11 @@ def _invoke_provider(state: ItineraryGraphState) -> ItineraryGraphState:
             "error": str(error) or "Itinerary provider failed",
             "error_exception": error,
             "retryable": retryable,
+            "repair_feedback": (
+                str(error)
+                if isinstance(error, ItineraryRevisionPatchError)
+                else state.get("repair_feedback", "")
+            ),
         }
 
 
@@ -212,7 +222,7 @@ def run_itinerary_generation_graph(
     context: TripContext,
     provider: ItineraryDraftProvider,
     *,
-    max_attempts: int = MAX_GRAPH_ATTEMPTS,
+    max_attempts: int = MAX_REVISION_ATTEMPTS,
 ) -> ItineraryDraft:
     logger.info("itinerary_graph operation=generate node=prepare")
     result = ITINERARY_GRAPH.invoke(
@@ -234,7 +244,7 @@ def run_itinerary_revision_graph(
     provider: ItineraryRevisionProvider,
     *,
     allow_persisted_metadata_revisions: bool = False,
-    max_attempts: int = MAX_GRAPH_ATTEMPTS,
+    max_attempts: int = MAX_REVISION_ATTEMPTS,
 ) -> ItineraryDraft:
     logger.info(
         "itinerary_graph operation=revise node=prepare version=%s instruction_length=%s",

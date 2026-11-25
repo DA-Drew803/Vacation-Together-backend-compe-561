@@ -139,8 +139,17 @@ def _serialize_place(place: dict) -> dict[str, object] | None:
 @lru_cache(maxsize=512)
 def resolve_place(title: str, destination: str) -> dict[str, object] | None:
     """Resolve an itinerary activity through Google Places (New)."""
-    place = _search_google_places(f"{title}, {destination}")
-    return _serialize_place(place) if place else None
+    queries = (
+        f"{title}, {destination}",
+        f"{title} in {destination}",
+        title,
+    )
+    for query in dict.fromkeys(query.strip() for query in queries if query.strip()):
+        place = _search_google_places(query)
+        resolved = _serialize_place(place) if place else None
+        if resolved is not None:
+            return resolved
+    return None
 
 
 @lru_cache(maxsize=128)

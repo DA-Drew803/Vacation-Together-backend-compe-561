@@ -116,10 +116,11 @@ def generate_destination_candidates(
     trip_id: Annotated[uuid.UUID, Path()],
     db: Annotated[Session, Depends(get_db)],
     current_member: Annotated[TripMember, Depends(get_current_trip_member)],
+    provider: Annotated[OpenAIItineraryProvider | None, Depends(get_itinerary_provider)],
 ) -> list[dict]:
     del current_member
     try:
-        candidates = destination_service.generate_candidates(db, trip_id)
+        candidates = destination_service.generate_candidates(db, trip_id, provider)
         return [
             destination_service.serialize_candidate_contract(candidate) for candidate in candidates
         ]

@@ -114,6 +114,33 @@ def provider_with(output: Any = None, error: Exception | None = None):
     return provider, client
 
 
+def test_destination_recommendations_use_structured_output_without_provider_score() -> None:
+    provider, client = provider_with(
+        {
+            "candidates": [
+                {
+                    "name": f"Destination {index}",
+                    "location": "United States",
+                    "estimated_cost_cents": 25_000,
+                    "match_explanation": "Fits the group's interests and budget.",
+                    "tags": ["food", "outdoors"],
+                }
+                for index in range(1, 6)
+            ]
+        }
+    )
+
+    recommendations = provider.generate_destination_recommendations(
+        {"interests": ["food", "outdoors"], "previous_destination_names": []}
+    )
+
+    assert len(recommendations) == 5
+    assert "match_score" not in recommendations[0]
+    assert client.responses.calls[0]["text_format"].__name__ == (
+        "GeneratedDestinationRecommendations"
+    )
+
+
 def test_successful_generation_covers_budget_categories_and_preserves_privacy() -> None:
     provider, client = provider_with(valid_output())
     private_context = context().model_copy(

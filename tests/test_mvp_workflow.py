@@ -215,11 +215,21 @@ def test_complete_nine_stage_mvp_workflow(mvp_client: TestClient) -> None:
     progress = mvp_client.get(
         f"/api/trips/{trip_id}/itinerary/approval", headers=auth_header(owner_token)
     )
-    assert progress.json() == {
+    progress_payload = progress.json()
+    assert {
+        key: progress_payload[key]
+        for key in ("version", "approved_count", "eligible_count", "finalized")
+    } == {
         "version": 2,
         "approved_count": 2,
         "eligible_count": 2,
         "finalized": True,
     }
+    assert progress_payload["current_member_id"]
+    assert {member["display_name"] for member in progress_payload["members"]} == {
+        "Owner",
+        "Member",
+    }
+    assert all(member["approved"] for member in progress_payload["members"])
     trip = mvp_client.get(f"/api/trips/{trip_id}", headers=auth_header(owner_token))
     assert trip.json()["state"] == "FINALIZED"
