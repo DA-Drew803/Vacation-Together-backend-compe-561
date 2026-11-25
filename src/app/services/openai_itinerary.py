@@ -96,7 +96,7 @@ class ItineraryProviderTimeoutError(ItineraryProviderError):
     """Raised when the provider request exceeds the configured timeout."""
 
 
-class ItineraryRevisionUnsupportedError(ItineraryProviderError):
+class ItineraryRevisionUnsupportedError(ItineraryProviderResponseError):
     """Raised when a requested revision cannot be applied safely."""
 
 
@@ -1103,6 +1103,10 @@ def validate_revision_intent_against_current(
     if intent.kind in {RevisionIntentKind.SEMANTIC, RevisionIntentKind.REPLACE_ACTIVITY}:
         if not current.items:
             raise ItineraryRevisionUnsupportedError("The current itinerary has no activities")
+        if not trusted_source or any(not has_valid_metadata(item) for item in current.items):
+            raise ItineraryRevisionUnsupportedError(
+                "Semantic revisions require trusted metadata from a provider-generated trusted draft"
+            )
         return
 
 
