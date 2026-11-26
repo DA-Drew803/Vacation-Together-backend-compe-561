@@ -160,6 +160,7 @@ def serialize_itinerary(
             "title": item.title,
             "estimated_cost": money_value(item.estimated_cost),
         }
+        category = None
         if item.semantic_metadata:
             tags = item.semantic_metadata.get("tags", [])
             category = item.semantic_metadata.get("category")
