@@ -152,6 +152,27 @@ def resolve_place(title: str, destination: str) -> dict[str, object] | None:
     return None
 
 
+def resolve_activity_place(
+    title: str,
+    destination: str,
+    *,
+    category: str | None = None,
+) -> dict[str, object] | None:
+    """Resolve an activity, using an airport fallback for flight cost lines."""
+    resolved = resolve_place(title, destination)
+    is_flight = category == "flights" or any(
+        term in title.casefold() for term in ("airfare", "flight", "air travel")
+    )
+    if not is_flight or (resolved and resolved.get("photo_name")):
+        return resolved
+
+    for query in (f"{destination} airport", f"{destination} international airport", destination):
+        airport = resolve_place(query, "")
+        if airport and airport.get("photo_name"):
+            return airport
+    return resolved
+
+
 @lru_cache(maxsize=128)
 def resolve_destination(destination: str, location: str = "") -> dict[str, object] | None:
     """Resolve the selected destination through Google Places (New)."""

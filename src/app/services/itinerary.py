@@ -42,7 +42,7 @@ from app.services.openai_itinerary import (
     ItineraryRevisionPatchError,
     ItineraryRevisionUnsupportedError,
 )
-from app.services.places import resolve_destination, resolve_place
+from app.services.places import resolve_activity_place, resolve_destination
 from app.workflows.itinerary_graph import (
     run_itinerary_generation_graph,
     run_itinerary_revision_graph,
@@ -172,7 +172,11 @@ def serialize_itinerary(
             destination_query = ", ".join(
                 part for part in (destination_name, destination_location) if part.strip()
             )
-            resolved = resolve_place(item.title, destination_query)
+            resolved = resolve_activity_place(
+                item.title,
+                destination_query,
+                category=str(category) if category else None,
+            )
             if resolved:
                 activity.update(resolved)
                 if "photo_name" in resolved:

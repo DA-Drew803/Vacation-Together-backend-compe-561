@@ -90,6 +90,30 @@ def test_fetch_photo_rejects_arbitrary_photo_names(monkeypatch) -> None:
     assert places.fetch_photo("https://example.com/image.jpg") is None
 
 
+def test_resolve_activity_place_uses_airport_photo_fallback(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    def fake_resolve_place(title: str, destination: str):
+        calls.append((title, destination))
+        if title == "Oaxaca City, Mexico airport":
+            return {"place_id": "airport", "photo_name": "places/airport/photos/photo"}
+        return {"place_id": "airfare"}
+
+    monkeypatch.setattr(places, "resolve_place", fake_resolve_place)
+
+    resolved = places.resolve_activity_place(
+        "Estimated round-trip airfare to Oaxaca City",
+        "Oaxaca City, Mexico",
+        category="flights",
+    )
+
+    assert resolved == {"place_id": "airport", "photo_name": "places/airport/photos/photo"}
+    assert calls == [
+        ("Estimated round-trip airfare to Oaxaca City", "Oaxaca City, Mexico"),
+        ("Oaxaca City, Mexico airport", ""),
+    ]
+
+
 def test_fetch_photo_returns_image_bytes(monkeypatch) -> None:
     class FakeHeaders:
         def get_content_type(self) -> str:
