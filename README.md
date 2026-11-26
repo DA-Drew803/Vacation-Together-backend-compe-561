@@ -99,7 +99,7 @@ Make sure Docker Desktop is running, then:
 docker compose up --build
 ```
 
-The API is exposed on `localhost:8000`. PostgreSQL is available to local tools at `localhost:5433` and to the API container at `db:5432`.
+The API is exposed on `localhost:8000`. PostgreSQL is available to local tools at `localhost:5432` and to the API container at `db:5432`.
 
 Open:
 
