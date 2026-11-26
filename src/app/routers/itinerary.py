@@ -26,7 +26,7 @@ from app.schemas.itinerary import (
 from app.services import itinerary as itinerary_service
 from app.services.itinerary import ItineraryConflictError, ItineraryInvalidError
 from app.services.openai_itinerary import OpenAIItineraryProvider
-from app.services.places import fetch_photo, resolve_destination, resolve_place
+from app.services.places import fetch_photo, resolve_activity_place, resolve_destination
 
 PHASE_5_ERROR_RESPONSES = {
     status.HTTP_400_BAD_REQUEST: {"model": Error, "description": "Invalid request"},
@@ -126,7 +126,12 @@ def read_activity_photo(
         for part in (context.destination_name, destination.location if destination else "")
         if part.strip()
     )
-    resolved = resolve_place(item.title, destination_query)
+    category = item.semantic_metadata.get("category") if item.semantic_metadata else None
+    resolved = resolve_activity_place(
+        item.title,
+        destination_query,
+        category=str(category) if category else None,
+    )
     photo_name = resolved.get("photo_name") if resolved else None
     if not isinstance(photo_name, str):
         raise HTTPException(

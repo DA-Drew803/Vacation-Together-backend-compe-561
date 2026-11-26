@@ -54,6 +54,22 @@ uv sync
 uv run pre-commit install
 ```
 
+Create a `.env` file with the backend and Docker configuration:
+
+```dotenv
+POSTGRES_DB=
+POSTGRES_USER=
+POSTGRES_PASSWORD=
+JWT_SECRET_KEY=
+OPENAI_API_KEY=
+OPENAI_MODEL=
+OPENAI_TIMEOUT_SECONDS=
+GOOGLE_PLACES_API_KEY=
+```
+
+Set `FRONTEND_ORIGINS` to the comma-separated frontend origins allowed by CORS, for example
+`http://localhost:3000`.
+
 Run hooks manually:
 
 ```bash
